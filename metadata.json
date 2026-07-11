@@ -1,0 +1,6 @@
+{
+  "name": "Alyn's Poultry Supply",
+  "description": "A modern mobile POS and stock tracking application designed for Alyn's Poultry Supply, featuring pricing variations, comprehensive reports, and payment tracking with Philippine Peso currency support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
