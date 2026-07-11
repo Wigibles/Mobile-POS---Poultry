@@ -31,7 +31,8 @@ data class ProductVariation(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val productId: Int,
     val name: String, // e.g., "per kilo", "per 3kg", "50kg bag"
-    val price: Double
+    val price: Double,
+    val multiplier: Double = 1.0 // base-unit multiplier: 1.0 = per kilo, 3.0 = per 3kg, 50.0 = 50kg bag
 )
 
 @Entity(tableName = "categories")
@@ -45,11 +46,12 @@ data class TransactionRecord(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val customerName: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
-    val status: String, // "PAID" or "UNPAID"
+    val status: String, // "PAID", "UNPAID", or "VOIDED"
     val subtotal: Double,
     val tax: Double,
     val discount: Double,
-    val totalAmount: Double
+    val totalAmount: Double,
+    val settledTimestamp: Long? = null // when an unpaid transaction was marked as paid
 )
 
 @Entity(

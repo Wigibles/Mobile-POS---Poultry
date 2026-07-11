@@ -21,8 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.AppDatabase
-import com.example.data.POSRepository
+import com.example.data.FirestorePOSRepository
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.InventoryScreen
 import com.example.ui.screens.POSScreen
@@ -38,15 +37,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // 1. Initialize local Room database
-        val database = AppDatabase.getDatabase(applicationContext)
-
-        // 2. Initialize repository
-        val repository = POSRepository(
-            database.productDao(),
-            database.categoryDao(),
-            database.transactionDao()
-        )
+        // 1. Initialize Firestore cloud repository (real-time sync across devices)
+        val repository = FirestorePOSRepository()
 
         // 3. Initialize view model via custom factory
         val viewModel: POSViewModel by viewModels {
@@ -91,7 +83,8 @@ class MainActivity : ComponentActivity() {
                                         badge = {
                                             if (cartItems.isNotEmpty()) {
                                                 Badge(containerColor = CoralPrimary) {
-                                                    Text("${cartItems.sumOf { it.quantity.toInt() }}")
+                                                    val total = cartItems.sumOf { it.quantity }
+                                                    Text(if (total == total.toLong().toDouble()) "${total.toLong()}" else String.format("%.1f", total))
                                                 }
                                             }
                                         }
@@ -137,7 +130,7 @@ class MainActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(bottom = innerPadding.calculateBottomPadding()) // manual safe navigation bar space
+                            .padding(innerPadding)
                     ) {
                         when (currentScreen) {
                             "HOME" -> DashboardScreen(

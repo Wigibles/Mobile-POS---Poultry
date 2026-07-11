@@ -38,6 +38,12 @@ interface ProductDao {
 
     @Delete
     suspend fun deleteVariation(variation: ProductVariation)
+
+    @Query("SELECT * FROM product_variations WHERE id = :id")
+    suspend fun getVariationById(id: Int): ProductVariation?
+
+    @Query("SELECT * FROM products WHERE category = :category")
+    suspend fun getProductsByCategory(category: String): List<Product>
 }
 
 @Dao
@@ -72,6 +78,15 @@ interface TransactionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTransactionItems(items: List<TransactionItem>)
 
+    @Update
+    suspend fun updateTransaction(transaction: TransactionRecord)
+
+    @Query("UPDATE transactions SET status = :status, settledTimestamp = :settledTimestamp WHERE id = :transactionId")
+    suspend fun updateTransactionStatus(transactionId: Int, status: String, settledTimestamp: Long?)
+
     @Delete
     suspend fun deleteTransaction(transaction: TransactionRecord)
+
+    @Query("DELETE FROM transaction_items WHERE transactionId = :transactionId")
+    suspend fun deleteTransactionItems(transactionId: Int)
 }

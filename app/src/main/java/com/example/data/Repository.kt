@@ -4,7 +4,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import java.util.Calendar
+import kotlin.math.roundToLong
+
+/**
+ * Rounds a Double to exactly 2 decimal places (centavo precision)
+ * to avoid floating-point accumulation errors in price calculations.
+ * Requirement 6.7 — Currency Precision.
+ */
+fun Double.roundToCentavos(): Double = (this * 100.0).roundToLong() / 100.0
 
 class POSRepository(
     private val productDao: ProductDao,
@@ -25,6 +32,7 @@ class POSRepository(
 
     // Compound Product Insertion
     suspend fun insertProduct(product: Product, variationsList: List<ProductVariation>): Int = withContext(Dispatchers.IO) {
+        ensureCategoryExists(product.category)
         val productId = productDao.insertProduct(product).toInt()
         val variationsWithId = variationsList.map { it.copy(productId = productId) }
         productDao.insertVariations(variationsWithId)
@@ -33,10 +41,23 @@ class POSRepository(
 
     // Compound Product Update
     suspend fun updateProduct(product: Product, variationsList: List<ProductVariation>) = withContext(Dispatchers.IO) {
+        ensureCategoryExists(product.category)
         productDao.updateProduct(product)
         productDao.deleteVariationsForProduct(product.id)
         val variationsWithId = variationsList.map { it.copy(productId = product.id) }
         productDao.insertVariations(variationsWithId)
+    }
+
+    /**
+     * Auto-creates a category if it doesn't already exist.
+     * This keeps the category filter chips in sync with product data.
+     */
+    private suspend fun ensureCategoryExists(categoryName: String) {
+        if (categoryName.isBlank()) return
+        val existing = categoryDao.getAllCategories().first()
+        if (existing.none { it.name.equals(categoryName, ignoreCase = true) }) {
+            categoryDao.insertCategory(Category(name = categoryName))
+        }
     }
 
     suspend fun deleteProduct(product: Product) = withContext(Dispatchers.IO) {
@@ -53,215 +74,187 @@ class POSRepository(
         }
     }
 
-    suspend fun deleteCategory(category: Category) = withContext(Dispatchers.IO) {
-        categoryDao.deleteCategory(category)
+    /**
+     * 6.8 — Category Deletion with Existing Products:
+     * Block deletion if products are still assigned to this category.
+     * Returns true if deleted, false if blocked.
+     */
+    suspend fun deleteCategory(category: Category): Boolean = withContext(Dispatchers.IO) {
+        val productsInCategory = productDao.getProductsByCategory(category.name)
+        if (productsInCategory.isNotEmpty()) {
+            false // blocked: products still assigned
+        } else {
+            categoryDao.deleteCategory(category)
+            true
+        }
     }
 
-    // Process a transaction: insert the record, insert items, and automatically decrement product stock levels!
+    /**
+     * 6.2 + 6.1 — Stock validation with variant multiplier:
+     * Checks if there is enough base-unit stock for the requested quantity × multiplier.
+     * Returns the available stock in base units, or null if product not found.
+     */
+    suspend fun getAvailableStock(productId: Int): Double? = withContext(Dispatchers.IO) {
+        productDao.getProductById(productId)?.stockLevel
+    }
+
+    /**
+     * Validates whether the requested quantity × variant multiplier does not exceed stock.
+     * Returns a StockValidationResult with the outcome.
+     */
+    suspend fun validateStockAvailability(
+        productId: Int,
+        variationId: Int,
+        requestedQuantity: Double
+    ): StockValidationResult = withContext(Dispatchers.IO) {
+        val product = productDao.getProductById(productId)
+        if (product == null) return@withContext StockValidationResult(false, 0.0, 0.0)
+
+        val variation = productDao.getVariationById(variationId)
+        val multiplier = variation?.multiplier ?: 1.0
+        val baseUnitsNeeded = requestedQuantity * multiplier
+
+        StockValidationResult(
+            isAvailable = baseUnitsNeeded <= product.stockLevel,
+            availableStock = product.stockLevel,
+            baseUnitsNeeded = baseUnitsNeeded
+        )
+    }
+
+    /**
+     * 6.1 + 6.7 — Process a transaction with variant-multiplier stock deduction
+     * and centavo-rounded price calculations.
+     *
+     * Stock deduction = sum of (quantity × variant.multiplier) per line item.
+     * All monetary values are rounded to centavos at each step.
+     */
     suspend fun processTransaction(
         transaction: TransactionRecord,
         items: List<TransactionItem>
     ): Int = withContext(Dispatchers.IO) {
-        val transactionId = transactionDao.insertTransaction(transaction).toInt()
-        val itemsWithId = items.map { it.copy(transactionId = transactionId) }
+        // Round monetary fields to centavos (6.7)
+        val roundedTransaction = transaction.copy(
+            subtotal = transaction.subtotal.roundToCentavos(),
+            tax = transaction.tax.roundToCentavos(),
+            discount = transaction.discount.roundToCentavos(),
+            totalAmount = transaction.totalAmount.roundToCentavos()
+        )
+
+        val transactionId = transactionDao.insertTransaction(roundedTransaction).toInt()
+        val itemsWithId = items.map {
+            it.copy(
+                transactionId = transactionId,
+                price = it.price.roundToCentavos()
+            )
+        }
         transactionDao.insertTransactionItems(itemsWithId)
 
-        // Decrement stock levels for each item purchased
+        // 6.1 — Decrement stock using variant multiplier
         for (item in items) {
             val product = productDao.getProductById(item.productId)
             if (product != null) {
-                val newStock = (product.stockLevel - item.quantity).coerceAtLeast(0.0)
+                // Find the matching variation by looking up all variations for this product
+                val allVars = productDao.getVariationsForProduct(item.productId).first()
+                val matchedVar = allVars.find { it.name == item.variationName }
+                val multiplier = matchedVar?.multiplier ?: 1.0
+                val baseUnitsDeducted = (item.quantity * multiplier).roundToCentavos()
+                val newStock = (product.stockLevel - baseUnitsDeducted).coerceAtLeast(0.0).roundToCentavos()
                 productDao.updateProduct(product.copy(stockLevel = newStock))
             }
         }
         transactionId
     }
 
-    suspend fun deleteTransaction(transaction: TransactionRecord) = withContext(Dispatchers.IO) {
+    // Get variation ID from a TransactionItem (needed for multiplier lookup)
+    private suspend fun findVariationId(productId: Int, variationName: String): Int? {
+        val vars = productDao.getVariationsForProduct(productId).first()
+        return vars.find { it.name == variationName }?.id
+    }
+
+    /**
+     * 6.3 — Mark an existing Unpaid transaction as Paid (settle balance).
+     * Updates status and timestamp without duplicating the record.
+     */
+    suspend fun markTransactionAsPaid(transactionId: Int) = withContext(Dispatchers.IO) {
+        transactionDao.updateTransactionStatus(
+            transactionId = transactionId,
+            status = "PAID",
+            settledTimestamp = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * 6.6 — Void a finalized transaction and restore deducted stock.
+     * The transaction status becomes "VOIDED" and all stock is restored.
+     */
+    suspend fun voidTransaction(transaction: TransactionRecord) = withContext(Dispatchers.IO) {
+        val items = transactionDao.getTransactionItems(transaction.id).first()
+
+        // Restore stock for each item using variant multiplier (matched by variation name)
+        for (item in items) {
+            val product = productDao.getProductById(item.productId)
+            if (product != null) {
+                val allVars = productDao.getVariationsForProduct(item.productId).first()
+                val matchedVar = allVars.find { it.name == item.variationName }
+                val multiplier = matchedVar?.multiplier ?: 1.0
+                val baseUnitsRestored = (item.quantity * multiplier).roundToCentavos()
+                val newStock = (product.stockLevel + baseUnitsRestored).roundToCentavos()
+                productDao.updateProduct(product.copy(stockLevel = newStock))
+            }
+        }
+
+        // Mark transaction as voided
+        transactionDao.updateTransactionStatus(
+            transactionId = transaction.id,
+            status = "VOIDED",
+            settledTimestamp = null
+        )
+    }
+
+    /**
+     * 6.6 — Delete a transaction AND restore stock (unlike plain delete which loses stock).
+     */
+    suspend fun deleteTransactionWithStockRestore(transaction: TransactionRecord) = withContext(Dispatchers.IO) {
+        val items = transactionDao.getTransactionItems(transaction.id).first()
+
+        // Restore stock if transaction was PAID or UNPAID (not already VOIDED)
+        if (transaction.status != "VOIDED") {
+            for (item in items) {
+                val product = productDao.getProductById(item.productId)
+                if (product != null) {
+                    val allVars = productDao.getVariationsForProduct(item.productId).first()
+                    val matchedVar = allVars.find { it.name == item.variationName }
+                    val multiplier = matchedVar?.multiplier ?: 1.0
+                    val baseUnitsRestored = (item.quantity * multiplier).roundToCentavos()
+                    val newStock = (product.stockLevel + baseUnitsRestored).roundToCentavos()
+                    productDao.updateProduct(product.copy(stockLevel = newStock))
+                }
+            }
+        }
+
+        transactionDao.deleteTransactionItems(transaction.id)
         transactionDao.deleteTransaction(transaction)
     }
 
-    // Pre-populate database with default categories, realistic products, variations, and matching past transactions
-    suspend fun prepopulateDatabaseIfEmpty() = withContext(Dispatchers.IO) {
-        val currentCategories = categoryDao.getAllCategories().first()
-        if (currentCategories.isNotEmpty()) return@withContext // Database already initialized
-
-        // 1. Insert Categories
-        val cats = listOf("Feeds", "Vitamins", "Medicine", "Equipment")
-        cats.forEach { categoryDao.insertCategory(Category(name = it)) }
-
-        // 2. Insert Products & Variations
-        val p1 = Product(name = "Chick Booster Feeds", category = "Feeds", stockLevel = 45.0, lowStockThreshold = 10.0)
-        val p1Id = productDao.insertProduct(p1).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p1Id, name = "per Kilo", price = 45.0),
-            ProductVariation(productId = p1Id, name = "3 Kilograms", price = 130.0),
-            ProductVariation(productId = p1Id, name = "50kg Bag", price = 2100.0)
-        ))
-
-        // Low stock products to match the mockup's low stock alert
-        val p2 = Product(name = "Broiler Grower Feeds", category = "Feeds", stockLevel = 4.0, lowStockThreshold = 8.0)
-        val p2Id = productDao.insertProduct(p2).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p2Id, name = "per Kilo", price = 42.0),
-            ProductVariation(productId = p2Id, name = "3 Kilograms", price = 120.0),
-            ProductVariation(productId = p2Id, name = "50kg Bag", price = 1950.0)
-        ))
-
-        val p3 = Product(name = "Egg Layer Mash", category = "Feeds", stockLevel = 2.0, lowStockThreshold = 5.0)
-        val p3Id = productDao.insertProduct(p3).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p3Id, name = "per Kilo", price = 38.0),
-            ProductVariation(productId = p3Id, name = "3 Kilograms", price = 110.0),
-            ProductVariation(productId = p3Id, name = "50kg Bag", price = 1800.0)
-        ))
-
-        val p4 = Product(name = "Poultry Vitamins (100g)", category = "Vitamins", stockLevel = 25.0, lowStockThreshold = 5.0)
-        val p4Id = productDao.insertProduct(p4).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p4Id, name = "Standard Pack", price = 180.0)
-        ))
-
-        val p5 = Product(name = "Antibiotic Soluble Powder", category = "Medicine", stockLevel = 8.0, lowStockThreshold = 4.0)
-        val p5Id = productDao.insertProduct(p5).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p5Id, name = "50g Pack", price = 220.0),
-            ProductVariation(productId = p5Id, name = "150g Pack", price = 550.0)
-        ))
-
-        val p6 = Product(name = "Chicken Feeder (Medium)", category = "Equipment", stockLevel = 12.0, lowStockThreshold = 3.0)
-        val p6Id = productDao.insertProduct(p6).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p6Id, name = "Standard Unit", price = 120.0)
-        ))
-
-        val p7 = Product(name = "Chicken Waterer (2 Gal)", category = "Equipment", stockLevel = 15.0, lowStockThreshold = 3.0)
-        val p7Id = productDao.insertProduct(p7).toInt()
-        productDao.insertVariations(listOf(
-            ProductVariation(productId = p7Id, name = "Standard Unit", price = 150.0)
-        ))
-
-        // 3. Prepopulate past transactions spanning the last 7 days to match the design's graphs
-        // Today: ₱5,230 (Paid: ₱3,000, Card/Unpaid split, let's create a few matching records)
-        // Yesterday (1 day ago): ₱4,200
-        // 2 days ago: ₱3,100
-        // 3 days ago: ₱2,500
-        // 4 days ago: ₱4,800
-        // 5 days ago: ₱3,900
-        // 6 days ago: ₱3,400
-
-        val cal = Calendar.getInstance()
-        val salesDistribution = listOf(
-            5230.0, // Today
-            4200.0, // 1 day ago
-            3100.0, // 2 days ago
-            2500.0, // 3 days ago
-            4800.0, // 4 days ago
-            3900.0, // 5 days ago
-            3400.0  // 6 days ago
-        )
-
-        for (i in salesDistribution.indices) {
-            val amount = salesDistribution[i]
-            cal.timeInMillis = System.currentTimeMillis()
-            cal.add(Calendar.DAY_OF_YEAR, -i)
-            val timestamp = cal.timeInMillis
-
-            // For today (index 0), let's split into a Paid and Unpaid transaction to match the mockup
-            if (i == 0) {
-                // Paid Transaction of ₱3,000
-                val tPaidId = transactionDao.insertTransaction(
-                    TransactionRecord(
-                        customerName = null,
-                        timestamp = timestamp - 3600 * 1000, // 1 hour ago
-                        status = "PAID",
-                        subtotal = 3000.0,
-                        tax = 0.0,
-                        discount = 0.0,
-                        totalAmount = 3000.0
-                    )
-                ).toInt()
-                transactionDao.insertTransactionItems(listOf(
-                    TransactionItem(
-                        transactionId = tPaidId,
-                        productId = p1Id,
-                        productName = "Chick Booster Feeds",
-                        variationName = "50kg Bag",
-                        price = 2100.0,
-                        quantity = 1.0
-                    ),
-                    TransactionItem(
-                        transactionId = tPaidId,
-                        productId = p4Id,
-                        productName = "Poultry Vitamins (100g)",
-                        variationName = "Standard Pack",
-                        price = 180.0,
-                        quantity = 5.0
-                    )
-                ))
-
-                // Unpaid Transaction of ₱2,230 for customer "Mang Juan"
-                val tUnpaidId = transactionDao.insertTransaction(
-                    TransactionRecord(
-                        customerName = "Mang Juan",
-                        timestamp = timestamp,
-                        status = "UNPAID",
-                        subtotal = 2230.0,
-                        tax = 0.0,
-                        discount = 0.0,
-                        totalAmount = 2230.0
-                    )
-                ).toInt()
-                transactionDao.insertTransactionItems(listOf(
-                    TransactionItem(
-                        transactionId = tUnpaidId,
-                        productId = p2Id,
-                        productName = "Broiler Grower Feeds",
-                        variationName = "50kg Bag",
-                        price = 1950.0,
-                        quantity = 1.0
-                    ),
-                    TransactionItem(
-                        transactionId = tUnpaidId,
-                        productId = p1Id,
-                        productName = "Chick Booster Feeds",
-                        variationName = "per Kilo",
-                        price = 45.0,
-                        quantity = 6.0
-                    ),
-                    TransactionItem(
-                        transactionId = tUnpaidId,
-                        productId = p6Id,
-                        productName = "Chicken Feeder (Medium)",
-                        variationName = "Standard Unit",
-                        price = 120.0,
-                        quantity = 1.0
-                    )
-                ))
-            } else {
-                // Past days: standard paid transactions
-                val tId = transactionDao.insertTransaction(
-                    TransactionRecord(
-                        customerName = if (i == 2) "Aling Nena" else null, // A historic unpaid debt
-                        timestamp = timestamp,
-                        status = if (i == 2) "UNPAID" else "PAID",
-                        subtotal = amount,
-                        tax = 0.0,
-                        discount = 0.0,
-                        totalAmount = amount
-                    )
-                ).toInt()
-                transactionDao.insertTransactionItems(listOf(
-                    TransactionItem(
-                        transactionId = tId,
-                        productId = p1Id,
-                        productName = "Chick Booster Feeds",
-                        variationName = "per Kilo",
-                        price = 45.0,
-                        quantity = amount / 45.0
-                    )
-                ))
-            }
-        }
+    /**
+     * Get all unique customer names from unpaid transactions (for autocomplete — 6.4).
+     */
+    suspend fun getUnpaidCustomerNames(): List<String> = withContext(Dispatchers.IO) {
+        transactionDao.getAllTransactions().first()
+            .filter { it.status == "UNPAID" && !it.customerName.isNullOrBlank() }
+            .mapNotNull { it.customerName }
+            .distinct()
+            .sorted()
     }
+
+    // No dummy data — the database starts empty for real data entry.
 }
+
+/**
+ * Result of stock availability validation (Requirement 6.2).
+ */
+data class StockValidationResult(
+    val isAvailable: Boolean,
+    val availableStock: Double,
+    val baseUnitsNeeded: Double
+)

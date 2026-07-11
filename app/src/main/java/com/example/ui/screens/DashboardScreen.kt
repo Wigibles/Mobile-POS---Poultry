@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -15,10 +16,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -39,9 +44,17 @@ fun DashboardScreen(
 ) {
     val stats by viewModel.dashboardStats.collectAsState()
     val lowStockList by viewModel.lowStockProducts.collectAsState()
-    val chartData by viewModel.last7DaysSalesChart.collectAsState()
+    val chartData by viewModel.salesChartData.collectAsState()
+    val chartPeriod by viewModel.chartPeriod.collectAsState()
+    val context = LocalContext.current
 
-    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("en", "PH"))
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-PH"))
+
+    // Settings
+    var showSettings by remember { mutableStateOf(false) }
+    var showClearDialog by remember { mutableStateOf(false) }
+    val isClearing by viewModel.isClearingData.collectAsState()
+    val isSyncing by viewModel.isSyncing.collectAsState()
 
     Column(
         modifier = modifier
@@ -50,10 +63,7 @@ fun DashboardScreen(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        // Safe spacing for status bar
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // 1. App Header (Rishi's General Store style -> Alyn's Poultry Supply)
+        // 1. App Header — Alyn's Poultry Supply
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -96,18 +106,18 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // User Icon button
+            // Settings gear
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(SurfaceLight)
-                    .clickable { },
+                    .clickable { showSettings = true },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Person,
-                    contentDescription = "Profile",
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
                     tint = TextMuted
                 )
             }
@@ -170,7 +180,7 @@ fun DashboardScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "₱${stats.paidToday.toInt()}",
+                                text = currencyFormatter.format(stats.paidToday).replace("PHP", "₱"),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = TextMuted
@@ -187,7 +197,7 @@ fun DashboardScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "₱${stats.unpaidToday.toInt()}",
+                                text = currencyFormatter.format(stats.unpaidToday).replace("PHP", "₱"),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = TextMuted
@@ -266,7 +276,7 @@ fun DashboardScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "₱${stats.avgTicketSize.toInt()}",
+                            text = currencyFormatter.format(stats.avgTicketSize).replace("PHP", "₱"),
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = CoralPrimary
@@ -346,7 +356,7 @@ fun DashboardScreen(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // 4. Last 7 Days Sales Graph
+        // 4. Sales Chart with period filters
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -364,83 +374,83 @@ fun DashboardScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Last 7 Days Sales",
+                        text = "Sales Overview",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextDark
                         )
                     )
                     Text(
-                        text = "View more",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = TextMuted,
-                            fontWeight = FontWeight.Bold
-                        ),
+                        text = "View all",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontWeight = FontWeight.Bold),
                         modifier = Modifier.clickable { viewModel.navigateTo("TRANSACTIONS") }
                     )
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // Beautiful fully reactive custom bar graph using standard Row & Column layout
+                // Period filter chips
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("7D" to "7 Days", "1M" to "This Month", "1Y" to "This Year").forEach { (key, label) ->
+                        FilterChip(
+                            selected = chartPeriod == key,
+                            onClick = { viewModel.setChartPeriod(key) },
+                            label = { Text(label, fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CoralPrimary,
+                                selectedLabelColor = Color.White,
+                                containerColor = BorderLight,
+                                labelColor = TextDark
+                            ),
+                            border = null,
+                            modifier = Modifier.height(28.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Chart bars
                 val maxAmount = chartData.maxOfOrNull { it.amount }?.coerceAtLeast(1000.0) ?: 1000.0
 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp),
+                        .height(160.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    chartData.forEach { point ->
+                    chartData.take(if (chartPeriod == "1M") 31 else if (chartPeriod == "1Y") 12 else 7).forEach { point ->
                         val barHeightProportion = if (maxAmount > 0) (point.amount / maxAmount).toFloat() else 0f
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.weight(1f)
                         ) {
-                            // Amount above bar if not 0
-                            if (point.amount > 0) {
+                            if (point.amount > 0 && (chartPeriod != "1M" || chartData.size <= 15)) {
                                 Text(
                                     text = "₱${(point.amount / 1000).toInt()}k",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 9.sp,
-                                        color = TextMuted
-                                    )
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 8.sp, color = TextMuted)
                                 )
                             } else {
-                                Text(
-                                    text = "₱0",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Normal,
-                                        fontSize = 9.sp,
-                                        color = Color.Transparent
-                                    )
-                                )
+                                Text("", style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp))
                             }
+
+                            Spacer(modifier = Modifier.height(3.dp))
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight(0.70f * barHeightProportion + 0.04f)
+                                    .width(if (chartPeriod == "1M") 6.dp else 22.dp)
+                                    .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp))
+                                    .background(if (point.amount == maxAmount && maxAmount > 0) SoftOrange else CoralPrimary)
+                            )
 
                             Spacer(modifier = Modifier.height(4.dp))
 
-                            // The colored bar
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxHeight(0.75f * barHeightProportion + 0.05f) // scale with safe min
-                                    .width(22.dp)
-                                    .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
-                                    .background(
-                                        if (point.amount == maxAmount) SoftOrange else CoralPrimary
-                                    )
-                            )
-
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            // Day Label
                             Text(
                                 text = point.label,
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = TextMuted
-                                )
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, color = TextMuted, fontSize = 8.sp),
+                                maxLines = 1
                             )
                         }
                     }
@@ -448,7 +458,100 @@ fun DashboardScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(60.dp)) // Safe scrolling space for floating buttons
+        Spacer(modifier = Modifier.height(60.dp)) // Safe scrolling space for bottom nav
+    }
+
+    // ── Settings Dialog ──
+    if (showSettings) {
+        AlertDialog(
+            onDismissRequest = { showSettings = false },
+            icon = { Icon(Icons.Default.Settings, contentDescription = null, tint = CoralPrimary, modifier = Modifier.size(36.dp)) },
+            title = { Text("Settings", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Sync Data
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Sync Data", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                            Text("Check connection and refresh all data", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.syncData { total ->
+                                    Toast.makeText(context, "Synced — $total records found", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            enabled = !isSyncing,
+                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(if (isSyncing) "…" else "Sync", fontSize = 12.sp)
+                        }
+                    }
+
+                    HorizontalDivider(color = BorderLight)
+
+                    // Delete All Data
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Delete All Data", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = ColorUnpaid))
+                            Text("Permanently remove everything from cloud", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
+                        }
+                        Button(
+                            onClick = { showClearDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = ColorUnpaid),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text("Clear", fontSize = 12.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showSettings = false }) { Text("Close") }
+            }
+        )
+    }
+
+    // ── Clear All Data Confirmation Dialog ──
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isClearing) showClearDialog = false },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = ColorUnpaid, modifier = Modifier.size(36.dp)) },
+            title = { Text("Delete All Data?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("This will permanently delete all products, transactions, categories, and counters from Firestore. This action cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.clearAllData { count ->
+                            showClearDialog = false
+                            showSettings = false
+                            Toast.makeText(context, "$count records deleted", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = !isClearing,
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorUnpaid)
+                ) {
+                    Text(if (isClearing) "Deleting…" else "Delete All", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }, enabled = !isClearing) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -513,7 +616,7 @@ fun LowStockCard(product: Product) {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Only ${product.stockLevel.toInt()} left",
+                text = "Only ${if (product.stockLevel == product.stockLevel.toLong().toDouble()) product.stockLevel.toLong().toString() else String.format("%.1f", product.stockLevel)} left",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.Black,
                     color = ColorUnpaid

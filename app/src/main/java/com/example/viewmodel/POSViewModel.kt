@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
+import com.example.data.StockValidationResult
+import com.example.data.roundToCentavos
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -15,13 +17,14 @@ data class CartItem(
     val quantity: Double
 )
 
-class POSViewModel(private val repository: POSRepository) : ViewModel() {
+class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel() {
 
-    init {
-        viewModelScope.launch {
-            repository.prepopulateDatabaseIfEmpty()
-        }
-    }
+    // ── Processing guards — prevent duplicate submissions ──
+    private val _isProcessingTransaction = MutableStateFlow(false)
+    val isProcessingTransaction: StateFlow<Boolean> = _isProcessingTransaction.asStateFlow()
+
+    private val _isSavingProduct = MutableStateFlow(false)
+    val isSavingProduct: StateFlow<Boolean> = _isSavingProduct.asStateFlow()
 
     // UI State Flows from Repository
     val products = repository.products.stateIn(
@@ -30,7 +33,10 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
         initialValue = emptyList()
     )
 
-    val categories = repository.categories.stateIn(
+    val categories = combine(repository.categories, repository.products) { cats, prods ->
+        val usedCategoryNames = prods.map { it.category }.distinct()
+        cats.filter { it.name in usedCategoryNames }.sortedBy { it.name }
+    }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
@@ -140,16 +146,19 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
         _cartItems.value = emptyList()
     }
 
-    // Process payment and finalize transaction
+    // Process payment and finalize transaction (6.7 — centavo-rounded calculations)
     fun finalizeTransaction(status: String, customerName: String?, onSuccess: () -> Unit) {
+        if (_isProcessingTransaction.value) return // guard: prevent double-tap
+        _isProcessingTransaction.value = true
         viewModelScope.launch {
-            val items = _cartItems.value
-            if (items.isEmpty()) return@launch
+            try {
+                val items = _cartItems.value
+                if (items.isEmpty()) return@launch
 
-            val subtotal = items.sumOf { it.variation.price * it.quantity }
-            val tax = 0.0 // can be modified if needed
+            val subtotal = items.sumOf { it.variation.price * it.quantity }.roundToCentavos()
+            val tax = 0.0
             val discount = 0.0
-            val total = subtotal + tax - discount
+            val total = subtotal.roundToCentavos()
 
             val record = TransactionRecord(
                 customerName = if (status == "UNPAID") customerName else null,
@@ -166,7 +175,7 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
                     productId = cartItem.product.id,
                     productName = cartItem.product.name,
                     variationName = cartItem.variation.name,
-                    price = cartItem.variation.price,
+                    price = cartItem.variation.price.roundToCentavos(),
                     quantity = cartItem.quantity
                 )
             }
@@ -174,6 +183,9 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
             repository.processTransaction(record, transactionItems)
             clearCart()
             onSuccess()
+            } finally {
+                _isProcessingTransaction.value = false
+            }
         }
     }
 
@@ -187,7 +199,10 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
         variationsList: List<ProductVariation>,
         onSuccess: () -> Unit
     ) {
+        if (_isSavingProduct.value) return // guard: prevent double-tap
+        _isSavingProduct.value = true
         viewModelScope.launch {
+            try {
             val product = Product(
                 id = id,
                 name = name,
@@ -201,6 +216,9 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
                 repository.updateProduct(product, variationsList)
             }
             onSuccess()
+            } finally {
+                _isSavingProduct.value = false
+            }
         }
     }
 
@@ -221,15 +239,103 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
         }
     }
 
-    fun deleteCategory(category: Category) {
+    fun deleteCategory(category: Category, onBlocked: () -> Unit = {}) {
         viewModelScope.launch {
-            repository.deleteCategory(category)
+            val deleted = repository.deleteCategory(category)
+            if (!deleted) {
+                onBlocked() // 6.8 — blocked because products still use this category
+            }
         }
     }
 
+    // 6.3 — Mark an unpaid transaction as paid (settle balance)
+    fun markTransactionAsPaid(transactionId: Int) {
+        viewModelScope.launch {
+            repository.markTransactionAsPaid(transactionId)
+        }
+    }
+
+    // 6.6 — Void a transaction and restore stock
+    fun voidTransaction(transaction: TransactionRecord) {
+        viewModelScope.launch {
+            repository.voidTransaction(transaction)
+        }
+    }
+
+    // 6.6 — Delete transaction WITH stock restoration
+    fun deleteTransactionWithStockRestore(transaction: TransactionRecord) {
+        viewModelScope.launch {
+            repository.deleteTransactionWithStockRestore(transaction)
+        }
+    }
+
+    // Legacy delete (kept for backward compatibility, but prefer deleteTransactionWithStockRestore)
     fun deleteTransaction(transaction: TransactionRecord) {
         viewModelScope.launch {
-            repository.deleteTransaction(transaction)
+            repository.deleteTransactionWithStockRestore(transaction)
+        }
+    }
+
+    // 6.4 — Get customer name suggestions for autocomplete
+    private val _customerSuggestions = MutableStateFlow<List<String>>(emptyList())
+    val customerSuggestions: StateFlow<List<String>> = _customerSuggestions.asStateFlow()
+
+    fun loadCustomerSuggestions() {
+        viewModelScope.launch {
+            _customerSuggestions.value = repository.getUnpaidCustomerNames()
+        }
+    }
+
+    // 6.2 — Validate stock before adding to cart
+    fun validateStockForCart(
+        product: Product,
+        variation: ProductVariation,
+        requestedQuantity: Double,
+        onResult: (StockValidationResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = repository.validateStockAvailability(
+                productId = product.id,
+                variationId = variation.id,
+                requestedQuantity = requestedQuantity
+            )
+            onResult(result)
+        }
+    }
+
+    // Delete transaction (no stock restore — used for admin cleanup of voided records)
+
+    // ── Settings: Clear all Firestore data ──
+    private val _isClearingData = MutableStateFlow(false)
+    val isClearingData: StateFlow<Boolean> = _isClearingData.asStateFlow()
+
+    fun clearAllData(onResult: (deletedCount: Int) -> Unit) {
+        if (_isClearingData.value) return
+        _isClearingData.value = true
+        viewModelScope.launch {
+            try {
+                val count = repository.clearAllData()
+                onResult(count)
+            } finally {
+                _isClearingData.value = false
+            }
+        }
+    }
+
+    // ── Settings: Sync data (health check) ──
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    fun syncData(onResult: (totalRecords: Int) -> Unit) {
+        if (_isSyncing.value) return
+        _isSyncing.value = true
+        viewModelScope.launch {
+            try {
+                val total = repository.countAllRecords()
+                onResult(total)
+            } finally {
+                _isSyncing.value = false
+            }
         }
     }
 
@@ -252,7 +358,7 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
         val todayStr = sdf.format(Date())
 
         val todayTxs = txList.filter {
-            sdf.format(Date(it.timestamp)) == todayStr
+            sdf.format(Date(it.timestamp)) == todayStr && it.status != "VOIDED"
         }
 
         val totalSalesToday = todayTxs.sumOf { it.totalAmount }
@@ -274,27 +380,60 @@ class POSViewModel(private val repository: POSRepository) : ViewModel() {
         initialValue = DashboardStats()
     )
 
-    // Chart Data calculations for Last 7 days
-    val last7DaysSalesChart = transactions.map { txList ->
+    // Chart period filter: "7D", "1M", "1Y"
+    private val _chartPeriod = MutableStateFlow("7D")
+    val chartPeriod: StateFlow<String> = _chartPeriod.asStateFlow()
+
+    fun setChartPeriod(period: String) { _chartPeriod.value = period }
+
+    // Chart data — reacts to period filter for weekly / monthly / yearly views
+    val salesChartData = combine(transactions, _chartPeriod) { txList, period ->
         val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val chartItems = mutableListOf<ChartDataPoint>()
         val cal = Calendar.getInstance()
+        val items = mutableListOf<ChartDataPoint>()
 
-        // Gather for past 7 days
-        for (i in 0 until 7) {
-            cal.time = Date()
-            cal.add(Calendar.DAY_OF_YEAR, -i)
-            val dateStr = sdf.format(cal.time)
-            val dayLabel = SimpleDateFormat("EEE", Locale.getDefault()).format(cal.time) // "Mon", "Tue" etc.
-
-            val totalForDay = txList.filter {
-                sdf.format(Date(it.timestamp)) == dateStr
-            }.sumOf { it.totalAmount }
-
-            chartItems.add(ChartDataPoint(dayLabel, totalForDay, dateStr))
+        when (period) {
+            "7D" -> {
+                for (i in 0 until 7) {
+                    cal.time = Date()
+                    cal.add(Calendar.DAY_OF_YEAR, -i)
+                    val dateStr = sdf.format(cal.time)
+                    val label = SimpleDateFormat("EEE", Locale.getDefault()).format(cal.time)
+                    val total = txList.filter { sdf.format(Date(it.timestamp)) == dateStr && it.status != "VOIDED" }.sumOf { it.totalAmount }
+                    items.add(ChartDataPoint(label, total, dateStr))
+                }
+                items.reverse()
+            }
+            "1M" -> {
+                cal.time = Date()
+                val daysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+                for (d in 1..daysInMonth) {
+                    cal.time = Date()
+                    cal.set(Calendar.DAY_OF_MONTH, d)
+                    val dateStr = sdf.format(cal.time)
+                    val label = "${d}"
+                    val total = txList.filter { sdf.format(Date(it.timestamp)) == dateStr && it.status != "VOIDED" }.sumOf { it.totalAmount }
+                    items.add(ChartDataPoint(label, total, dateStr))
+                }
+            }
+            "1Y" -> {
+                val monthNames = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+                cal.time = Date()
+                val thisYear = cal.get(Calendar.YEAR)
+                for (m in 0..11) {
+                    cal.set(thisYear, m, 1)
+                    val monthStart = sdf.format(cal.time)
+                    cal.set(Calendar.DAY_OF_MONTH, cal.getActualMaximum(Calendar.DAY_OF_MONTH))
+                    val monthEnd = sdf.format(cal.time)
+                    val total = txList.filter {
+                        val d = sdf.format(Date(it.timestamp))
+                        d >= monthStart && d <= monthEnd && it.status != "VOIDED"
+                    }.sumOf { it.totalAmount }
+                    items.add(ChartDataPoint(monthNames[m], total, monthStart))
+                }
+            }
         }
-
-        chartItems.reversed() // Oldest to newest
+        items
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -357,7 +496,7 @@ data class ChartDataPoint(
     val dateString: String
 )
 
-class POSViewModelFactory(private val repository: POSRepository) : ViewModelProvider.Factory {
+class POSViewModelFactory(private val repository: FirestorePOSRepository) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(POSViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")

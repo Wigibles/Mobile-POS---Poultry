@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -49,9 +50,15 @@ fun InventoryScreen(
     val products by viewModel.products.collectAsState()
     val categories by viewModel.categories.collectAsState()
     val variations by viewModel.variations.collectAsState()
+    val isSaving by viewModel.isSavingProduct.collectAsState()
 
     var showForm by remember { mutableStateOf(false) }
-    var showCategoryDialog by remember { mutableStateOf(false) }
+
+    // Delete confirmation
+    var productToDelete by remember { mutableStateOf<Product?>(null) }
+
+    // Category filter for inventory list
+    var inventoryCategoryFilter by remember { mutableStateOf<String?>(null) }
 
     // Form inputs state
     var editingProductId by remember { mutableStateOf(0) }
@@ -60,13 +67,10 @@ fun InventoryScreen(
     var stockInput by remember { mutableStateOf("") }
     var lowStockThresholdInput by remember { mutableStateOf("5") }
 
-    // Nested pricing variations state: list of (Name, Price) pairs
-    val variationOptions = remember { mutableStateListOf<Pair<String, String>>() }
+    // Nested pricing variations state: list of (Name, Price, Multiplier) triples
+    val variationOptions = remember { mutableStateListOf<Triple<String, String, String>>() }
 
-    // Quick add custom category input
-    var newCategoryName by remember { mutableStateOf("") }
-
-    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("en", "PH"))
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-PH"))
 
     // Set editing fields if product is loaded from the edit flow
     fun startNewProductForm() {
@@ -76,7 +80,7 @@ fun InventoryScreen(
         stockInput = ""
         lowStockThresholdInput = "5"
         variationOptions.clear()
-        variationOptions.add(Pair("per Kilo", "45")) // default starter variations for easy testing
+        variationOptions.add(Triple("per Kilo", "45", "1")) // default starter variation
         showForm = true
     }
 
@@ -84,18 +88,28 @@ fun InventoryScreen(
         editingProductId = product.id
         nameInput = product.name
         categoryInput = product.category
-        stockInput = product.stockLevel.toInt().toString()
-        lowStockThresholdInput = product.lowStockThreshold.toInt().toString()
+        stockInput = if (product.stockLevel == product.stockLevel.toLong().toDouble()) product.stockLevel.toLong().toString() else product.stockLevel.toString()
+        lowStockThresholdInput = if (product.lowStockThreshold == product.lowStockThreshold.toLong().toDouble()) product.lowStockThreshold.toLong().toString() else product.lowStockThreshold.toString()
 
         variationOptions.clear()
         val prodVars = variations.filter { it.productId == product.id }
         prodVars.forEach {
-            variationOptions.add(Pair(it.name, it.price.toInt().toString()))
+            variationOptions.add(Triple(
+                it.name,
+                if (it.price == it.price.toLong().toDouble()) it.price.toLong().toString() else it.price.toString(),
+                if (it.multiplier == it.multiplier.toLong().toDouble()) it.multiplier.toLong().toString() else it.multiplier.toString()
+            ))
         }
         if (variationOptions.isEmpty()) {
-            variationOptions.add(Pair("Standard Unit", "100"))
+            variationOptions.add(Triple("Standard Unit", "100", "1"))
         }
         showForm = true
+    }
+
+    // Filter products by selected category
+    val filteredProducts = remember(products, inventoryCategoryFilter) {
+        if (inventoryCategoryFilter == null) products
+        else products.filter { it.category.equals(inventoryCategoryFilter, ignoreCase = true) }
     }
 
     Column(
@@ -103,13 +117,11 @@ fun InventoryScreen(
             .fillMaxSize()
             .background(BackgroundLight)
     ) {
-        Spacer(modifier = Modifier.height(24.dp))
-
         // Screen Top Row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -121,34 +133,60 @@ fun InventoryScreen(
                 )
             )
 
-            // Buttons
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Category options editor
-                IconButton(
-                    onClick = { showCategoryDialog = true },
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(SurfaceLight)
-                ) {
-                    Icon(Icons.Default.Category, contentDescription = "Manage Categories", tint = CoralPrimary)
-                }
-
+            Row {
                 Button(
                     onClick = { startNewProductForm() },
                     colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     modifier = Modifier.testTag("add_product_fab")
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Product", color = Color.White, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Text("Product", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
         }
 
+        // Category Filter Chips
+        if (categories.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = inventoryCategoryFilter == null,
+                        onClick = { inventoryCategoryFilter = null },
+                        label = { Text("All", fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CoralPrimary, selectedLabelColor = Color.White,
+                            containerColor = BorderLight, labelColor = TextDark
+                        ),
+                        border = null,
+                        modifier = Modifier.height(28.dp)
+                    )
+                }
+                items(categories) { cat ->
+                    FilterChip(
+                        selected = inventoryCategoryFilter == cat.name,
+                        onClick = { inventoryCategoryFilter = if (inventoryCategoryFilter == cat.name) null else cat.name },
+                        label = { Text(cat.name, fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CoralPrimary, selectedLabelColor = Color.White,
+                            containerColor = BorderLight, labelColor = TextDark
+                        ),
+                        border = null,
+                        modifier = Modifier.height(28.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+        }
+
         // Product Catalog List
-        if (products.isEmpty()) {
+        if (filteredProducts.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -160,23 +198,25 @@ fun InventoryScreen(
                     Icon(
                         imageVector = Icons.Default.Inventory,
                         contentDescription = "Empty Inventory",
-                        tint = TextMuted,
-                        modifier = Modifier.size(64.dp)
+                        tint = TextMuted.copy(alpha = 0.5f),
+                        modifier = Modifier.size(56.dp)
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Your inventory is empty",
+                        text = if (products.isEmpty()) "Your inventory is empty" else "No products in this category",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextMuted
                         )
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = { startNewProductForm() },
-                        colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary)
-                    ) {
-                        Text("Add First Product", color = Color.White)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (products.isEmpty()) {
+                        Button(
+                            onClick = { startNewProductForm() },
+                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary)
+                        ) {
+                            Text("Add First Product", color = Color.White)
+                        }
                     }
                 }
             }
@@ -185,22 +225,52 @@ fun InventoryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 80.dp)
             ) {
-                items(products) { product ->
+                items(filteredProducts, key = { it.id }) { product ->
                     val prodVars = variations.filter { it.productId == product.id }
                     InventoryProductRow(
                         product = product,
                         variations = prodVars,
                         currencyFormatter = currencyFormatter,
                         onEdit = { startEditProductForm(product) },
-                        onDelete = { viewModel.deleteProduct(product) }
+                        onDelete = { productToDelete = product }
                     )
                 }
             }
         }
+    }
+
+    // ── Delete Product Confirmation ──
+    if (productToDelete != null) {
+        val product = productToDelete!!
+        AlertDialog(
+            onDismissRequest = { productToDelete = null },
+            icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = ColorUnpaid, modifier = Modifier.size(32.dp)) },
+            title = { Text("Delete Product?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Permanently delete \"${product.name}\"? All pricing options for this product will also be removed.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteProduct(product)
+                        productToDelete = null
+                        Toast.makeText(context, "\"${product.name}\" deleted", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorUnpaid)
+                ) {
+                    Text("Delete", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { productToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // PRODUCT INSERTION & EDITING FULL-SCREEN DIALOG
@@ -209,8 +279,8 @@ fun InventoryScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.9f)
-                    .padding(8.dp),
+                    .fillMaxHeight(if (LocalConfiguration.current.screenHeightDp < 700) 0.95f else 0.88f)
+                    .padding(4.dp),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = SurfaceLight),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -218,7 +288,7 @@ fun InventoryScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(20.dp)
+                        .padding(16.dp)
                 ) {
                     // Header
                     Row(
@@ -235,7 +305,7 @@ fun InventoryScreen(
                         }
                     }
 
-                    HorizontalDivider(color = BorderLight, modifier = Modifier.padding(vertical = 10.dp))
+                    HorizontalDivider(color = BorderLight, modifier = Modifier.padding(vertical = 12.dp))
 
                     // Form Body with vertical scrolling
                     Column(
@@ -244,42 +314,49 @@ fun InventoryScreen(
                             .verticalScroll(rememberScrollState())
                     ) {
                         // Product Name
-                        Text("Product Name:", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Product Name", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Enter the display name for this product", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         OutlinedTextField(
                             value = nameInput,
                             onValueChange = { nameInput = it },
-                            placeholder = { Text("e.g. Broiler Grower Feeds", color = TextMuted) },
+                            placeholder = { Text("e.g. Broiler Grower Feeds", color = TextMuted.copy(alpha = 0.6f)) },
                             singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
                             shape = RoundedCornerShape(10.dp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = CoralPrimary,
                                 unfocusedBorderColor = BorderLight,
                                 focusedContainerColor = BackgroundLight,
-                                unfocusedContainerColor = BackgroundLight
+                                unfocusedContainerColor = BackgroundLight,
+                                focusedTextColor = TextDark,
+                                unfocusedTextColor = TextDark
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("form_product_name")
                         )
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                        // Category Dropdown/Selector
-                        Text("Category (User custom option):", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                        Spacer(modifier = Modifier.height(4.dp))
+                        // Category Selector with inline "new category" input
+                        Text("Category", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Tap a chip or type a new category name below", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
+                        Spacer(modifier = Modifier.height(6.dp))
 
-                        // Custom scrollable category row for easy rapid selection
+                        // Existing category chips
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             items(categories) { cat ->
-                                val isSelected = categoryInput == cat.name
+                                val isSelected = categoryInput.equals(cat.name, ignoreCase = true)
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = { categoryInput = cat.name },
-                                    label = { Text(cat.name) },
+                                    label = { Text(cat.name, fontSize = 13.sp) },
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = CoralPrimary,
                                         selectedLabelColor = Color.White,
@@ -290,7 +367,34 @@ fun InventoryScreen(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // Inline new-category text field
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = if (categories.any { it.name.equals(categoryInput, ignoreCase = true) }) "" else categoryInput,
+                                onValueChange = { categoryInput = it.trim() },
+                                placeholder = { Text("Or type a new category…", color = TextMuted.copy(alpha = 0.6f)) },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = CoralPrimary,
+                                    unfocusedBorderColor = BorderLight,
+                                    focusedContainerColor = BackgroundLight,
+                                    unfocusedContainerColor = BackgroundLight,
+                                    focusedTextColor = TextDark,
+                                    unfocusedTextColor = TextDark
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
 
                         // Stock levels & Low Stock threshold
                         Row(
@@ -299,20 +403,25 @@ fun InventoryScreen(
                         ) {
                             // Current Stock levels
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Stock Level:", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("Current Stock", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text("How many base units in inventory", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 OutlinedTextField(
                                     value = stockInput,
                                     onValueChange = { stockInput = it },
-                                    placeholder = { Text("e.g. 50", color = TextMuted) },
+                                    placeholder = { Text("e.g. 50", color = TextMuted.copy(alpha = 0.6f)) },
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     singleLine = true,
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
                                     shape = RoundedCornerShape(10.dp),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = CoralPrimary,
                                         unfocusedBorderColor = BorderLight,
                                         focusedContainerColor = BackgroundLight,
-                                        unfocusedContainerColor = BackgroundLight
+                                        unfocusedContainerColor = BackgroundLight,
+                                        focusedTextColor = TextDark,
+                                        unfocusedTextColor = TextDark
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -322,49 +431,57 @@ fun InventoryScreen(
 
                             // Low Stock Threshold
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Low Stock Alert:", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("Low Stock Alert At", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text("Warn when stock drops below this", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 OutlinedTextField(
                                     value = lowStockThresholdInput,
                                     onValueChange = { lowStockThresholdInput = it },
-                                    placeholder = { Text("e.g. 5", color = TextMuted) },
+                                    placeholder = { Text("e.g. 5", color = TextMuted.copy(alpha = 0.6f)) },
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     singleLine = true,
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
                                     shape = RoundedCornerShape(10.dp),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = CoralPrimary,
                                         unfocusedBorderColor = BorderLight,
                                         focusedContainerColor = BackgroundLight,
-                                        unfocusedContainerColor = BackgroundLight
+                                        unfocusedContainerColor = BackgroundLight,
+                                        focusedTextColor = TextDark,
+                                        unfocusedTextColor = TextDark
                                     ),
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                        // SPECIFIC PRICING FOR EACH ITEM (PACKAGE OPTIONS - AS REQUESTED!)
+                        // Pricing & Package Options
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "Pricing Variation Options:",
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black, color = TextDark)
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Pricing & Package Options",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black, color = TextDark)
+                                )
+                                Text(
+                                    text = "Define each sellable unit with its price and stock multiplier",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                                )
+                            }
 
-                            // Add Option Button (User can add price options here!)
                             TextButton(
-                                onClick = {
-                                    variationOptions.add(Pair("", ""))
-                                },
-                                colors = ButtonDefaults.textButtonColors(contentColor = CoralPrimary)
+                                onClick = { variationOptions.add(Triple("", "", "1")) },
+                                colors = ButtonDefaults.textButtonColors(contentColor = CoralPrimary),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                             ) {
-                                Icon(Icons.Default.AddCircle, contentDescription = "Add Option")
+                                Icon(Icons.Default.AddCircle, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Add Option", fontWeight = FontWeight.Bold)
+                                Text("Add", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
                             }
                         }
 
@@ -372,60 +489,101 @@ fun InventoryScreen(
 
                         if (variationOptions.isEmpty()) {
                             Text(
-                                text = "Please add at least one price option (e.g., per Kilo, 50kg Bag).",
+                                text = "Add at least one package option (e.g., per Kilo at ₱45, 50kg Bag at ₱2,100).",
                                 style = MaterialTheme.typography.bodySmall.copy(color = ColorUnpaid),
                                 modifier = Modifier.padding(vertical = 4.dp)
                             )
                         } else {
+                            // Column headers for variation fields
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text("Package Name", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, fontSize = 10.sp), modifier = Modifier.weight(1.8f))
+                                Text("Price (₱)", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, fontSize = 10.sp), modifier = Modifier.weight(1f))
+                                Text("Stock ×", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, fontSize = 10.sp), modifier = Modifier.width(48.dp))
+                                Spacer(modifier = Modifier.width(28.dp)) // for delete button spacing
+                            }
+
                             Column(
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                variationOptions.forEachIndexed { index, pair ->
+                                variationOptions.forEachIndexed { index, triple ->
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        // Package option name (e.g. per kilo, 3 kilograms)
+                                        // Package option name
                                         OutlinedTextField(
-                                            value = pair.first,
+                                            value = triple.first,
                                             onValueChange = { newVal ->
-                                                variationOptions[index] = Pair(newVal, pair.second)
+                                                variationOptions[index] = Triple(newVal, triple.second, triple.third)
                                             },
-                                            placeholder = { Text("e.g. per Kilo", color = TextMuted) },
+                                            placeholder = { Text("per Kilo", color = TextMuted.copy(alpha = 0.6f)) },
                                             singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
                                             shape = RoundedCornerShape(8.dp),
                                             colors = OutlinedTextFieldDefaults.colors(
                                                 focusedBorderColor = CoralPrimary,
                                                 unfocusedBorderColor = BorderLight,
                                                 focusedContainerColor = BackgroundLight,
-                                                unfocusedContainerColor = BackgroundLight
+                                                unfocusedContainerColor = BackgroundLight,
+                                                focusedTextColor = TextDark,
+                                                unfocusedTextColor = TextDark
                                             ),
                                             modifier = Modifier
-                                                .weight(1.5f)
+                                                .weight(1.8f)
                                                 .testTag("variation_name_$index")
                                         )
 
                                         // Package price
                                         OutlinedTextField(
-                                            value = pair.second,
+                                            value = triple.second,
                                             onValueChange = { newVal ->
-                                                variationOptions[index] = Pair(pair.first, newVal)
+                                                variationOptions[index] = Triple(triple.first, newVal, triple.third)
                                             },
-                                            placeholder = { Text("₱ Price", color = TextMuted) },
+                                            placeholder = { Text("45", color = TextMuted.copy(alpha = 0.6f)) },
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                             singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
                                             shape = RoundedCornerShape(8.dp),
                                             colors = OutlinedTextFieldDefaults.colors(
                                                 focusedBorderColor = CoralPrimary,
                                                 unfocusedBorderColor = BorderLight,
                                                 focusedContainerColor = BackgroundLight,
-                                                unfocusedContainerColor = BackgroundLight
+                                                unfocusedContainerColor = BackgroundLight,
+                                                focusedTextColor = TextDark,
+                                                unfocusedTextColor = TextDark
                                             ),
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .testTag("variation_price_$index")
+                                        )
+
+                                        // Multiplier
+                                        OutlinedTextField(
+                                            value = triple.third,
+                                            onValueChange = { newVal ->
+                                                variationOptions[index] = Triple(triple.first, triple.second, newVal)
+                                            },
+                                            placeholder = { Text("1", color = TextMuted.copy(alpha = 0.6f)) },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = CoralPrimary,
+                                                unfocusedBorderColor = BorderLight,
+                                                focusedContainerColor = BackgroundLight,
+                                                unfocusedContainerColor = BackgroundLight,
+                                                focusedTextColor = TextDark,
+                                                unfocusedTextColor = TextDark
+                                            ),
+                                            modifier = Modifier
+                                                .width(48.dp)
+                                                .testTag("variation_multiplier_$index")
                                         )
 
                                         // Delete option button
@@ -436,17 +594,25 @@ fun InventoryScreen(
                                                 } else {
                                                     Toast.makeText(context, "Must have at least 1 pricing option!", Toast.LENGTH_SHORT).show()
                                                 }
-                                            }
+                                            },
+                                            modifier = Modifier.size(28.dp)
                                         ) {
-                                            Icon(Icons.Default.RemoveCircle, contentDescription = "Remove Option", tint = ColorUnpaid)
+                                            Icon(Icons.Default.RemoveCircle, contentDescription = "Remove Option", tint = ColorUnpaid, modifier = Modifier.size(18.dp))
                                         }
                                     }
                                 }
                             }
+
+                            // Multiplier explanation
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Stock × = how many base units one package consumes. e.g. \"50kg Bag\" = ×50, \"per Kilo\" = ×1",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 10.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Form Action Buttons
                     Row(
@@ -457,11 +623,12 @@ fun InventoryScreen(
                             onClick = { showForm = false },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Cancel", color = TextMuted)
+                            Text("Cancel", color = TextDark, fontWeight = FontWeight.Medium)
                         }
 
                         Button(
                             onClick = {
+                                if (isSaving) return@Button
                                 val finalName = nameInput.trim()
                                 val finalCategory = categoryInput.trim()
                                 val finalStock = stockInput.toDoubleOrNull() ?: 0.0
@@ -475,12 +642,14 @@ fun InventoryScreen(
                                 val validVariations = variationOptions.mapNotNull {
                                     val vName = it.first.trim()
                                     val vPrice = it.second.toDoubleOrNull()
+                                    val vMultiplier = it.third.toDoubleOrNull() ?: 1.0
                                     if (vName.isNotEmpty() && vPrice != null && vPrice >= 0.0) {
                                         ProductVariation(
                                             id = 0, // database auto-assigns
                                             productId = editingProductId,
                                             name = vName,
-                                            price = vPrice
+                                            price = vPrice,
+                                            multiplier = vMultiplier.coerceAtLeast(0.01)
                                         )
                                     } else null
                                 }
@@ -502,130 +671,17 @@ fun InventoryScreen(
                                     Toast.makeText(context, "Product saved successfully!", Toast.LENGTH_SHORT).show()
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CoralPrimary,
+                                disabledContainerColor = CoralPrimary.copy(alpha = 0.5f)
+                            ),
+                            enabled = !isSaving,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1.5f)
                                 .testTag("save_product_button")
                         ) {
                             Text("Save Product", color = Color.White)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // DYNAMIC CATEGORY MANAGER DIALOG (As requested!)
-    if (showCategoryDialog) {
-        Dialog(onDismissRequest = { showCategoryDialog = false }) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(24.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Manage Product Categories",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = TextDark)
-                        )
-                        IconButton(onClick = { showCategoryDialog = false }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Text Field to add dynamic Category
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                                                            value = newCategoryName,
-                                                            onValueChange = { newCategoryName = it },
-                                                            placeholder = { Text("e.g. Feed Additives", color = TextMuted) },
-                                                            singleLine = true,
-                                                            shape = RoundedCornerShape(8.dp),
-                                                            colors = OutlinedTextFieldDefaults.colors(
-                                                                focusedBorderColor = CoralPrimary,
-                                                                unfocusedBorderColor = BorderLight,
-                                                                focusedContainerColor = BackgroundLight,
-                                                                unfocusedContainerColor = BackgroundLight
-                                                            ),
-                                                            modifier = Modifier
-                                                                .weight(1f)
-                                                                .testTag("new_category_input")
-                                                        )
-
-                        Button(
-                            onClick = {
-                                val trimmed = newCategoryName.trim()
-                                if (trimmed.isNotEmpty()) {
-                                    viewModel.addCategory(trimmed)
-                                    newCategoryName = ""
-                                    Toast.makeText(context, "Category added!", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Text("Add", color = Color.White)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = "Current Categories:",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Scrollable list of current categories with deletion capabilities
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 200.dp)
-                    ) {
-                        LazyColumn(
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            items(categories) { cat ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(BackgroundLight)
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(text = cat.name, style = MaterialTheme.typography.bodyMedium.copy(color = TextDark))
-                                    IconButton(
-                                        onClick = {
-                                            viewModel.deleteCategory(cat)
-                                            Toast.makeText(context, "Category deleted!", Toast.LENGTH_SHORT).show()
-                                        },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ColorUnpaid, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -642,6 +698,9 @@ fun InventoryProductRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val isLowStock = product.stockLevel <= product.lowStockThreshold
+    val stockColor = if (isLowStock) ColorUnpaid else ColorPaid
+
     val emoji = when {
         product.name.contains("Booster", ignoreCase = true) -> "🐣"
         product.name.contains("Grower", ignoreCase = true) -> "🐓"
@@ -649,137 +708,85 @@ fun InventoryProductRow(
         product.name.contains("Vitamin", ignoreCase = true) -> "💊"
         product.name.contains("Feeder", ignoreCase = true) -> "🥣"
         product.name.contains("Waterer", ignoreCase = true) -> "🪣"
+        product.name.contains("Antibiotic", ignoreCase = true) || product.name.contains("Medicine", ignoreCase = true) -> "💉"
         else -> "🌾"
+    }
+
+    // Build compact price/variant summary string
+    val priceSummary = when {
+        variations.isEmpty() -> "No pricing"
+        variations.size == 1 -> {
+            val v = variations.first()
+            "${v.name} ${currencyFormatter.format(v.price).replace("PHP", "₱")}"
+        }
+        else -> variations.take(2).joinToString("  ·  ") { v ->
+            "${v.name} ${currencyFormatter.format(v.price).replace("PHP", "₱")}"
+        } + if (variations.size > 2) " +${variations.size - 2} more" else ""
     }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, BorderLight)
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, if (isLowStock) ColorUnpaid.copy(alpha = 0.25f) else BorderLight)
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            // Emoji thumbnail — smaller
+            Box(
+                modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(BackgroundLight),
+                contentAlignment = Alignment.Center
             ) {
-                // Mini emoji thumbnail
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(BackgroundLight),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = emoji, fontSize = 24.sp)
-                }
+                Text(text = emoji, fontSize = 22.sp)
+            }
 
-                Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(10.dp))
 
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
+            // Name + category + stock badge + price summary — all compact
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         text = product.name,
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
-                    Text(
-                        text = "Category: ${product.category}",
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
-                    )
+                    // Stock badge
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(stockColor))
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            if (product.stockLevel == product.stockLevel.toLong().toDouble()) "${product.stockLevel.toLong()}" else String.format("%.1f", product.stockLevel),
+                            fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            color = if (isLowStock) ColorUnpaid else TextMuted
+                        )
+                    }
                 }
 
-                // Edit and Delete Buttons
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    IconButton(
-                        onClick = onEdit,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.Edit, contentDescription = "Edit Product", tint = CoralPrimary, modifier = Modifier.size(18.dp))
-                    }
+                Spacer(Modifier.height(2.dp))
 
-                    IconButton(
-                        onClick = onDelete,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete Product", tint = ColorUnpaid, modifier = Modifier.size(18.dp))
-                    }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = product.category,
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp),
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(BorderLight).padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                    Text(
+                        text = priceSummary,
+                        style = MaterialTheme.typography.labelSmall.copy(color = CoralPrimary, fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            HorizontalDivider(color = BorderLight, thickness = 1.dp)
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Sub details (Stock and Pricing list)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                // Stock section
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Stock Levels", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (product.stockLevel <= product.lowStockThreshold) ColorUnpaid else ColorPaid
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "${product.stockLevel.toInt()} units",
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = if (product.stockLevel <= product.lowStockThreshold) ColorUnpaid else TextDark
-                            )
-                        )
-                    }
-                    if (product.stockLevel <= product.lowStockThreshold) {
-                        Text(
-                            text = "Low Stock Alert!",
-                            color = ColorUnpaid,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                // Variation package options price list
-                Column(
-                    modifier = Modifier.weight(1.5f),
-                    horizontalAlignment = Alignment.End
-                ) {
-                    Text("Price Options", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
-                    Spacer(modifier = Modifier.height(4.dp))
-                    variations.forEach { variation ->
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = variation.name,
-                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
-                            )
-                            Text(
-                                text = currencyFormatter.format(variation.price).replace("PHP", "₱"),
-                                style = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontWeight = FontWeight.Black)
-                            )
-                        }
-                    }
-                }
+            // Action buttons — more compact
+            IconButton(onClick = onEdit, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.Edit, "Edit", tint = CoralPrimary, modifier = Modifier.size(16.dp))
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.Delete, "Delete", tint = ColorUnpaid, modifier = Modifier.size(16.dp))
             }
         }
     }

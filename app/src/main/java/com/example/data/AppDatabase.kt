@@ -13,7 +13,7 @@ import androidx.room.RoomDatabase
         TransactionRecord::class,
         TransactionItem::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -32,10 +32,17 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "alyns_poultry_pos_db"
                 )
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_1_2)
                 .build()
                 INSTANCE = instance
                 instance
+            }
+        }
+
+        private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE product_variations ADD COLUMN multiplier REAL NOT NULL DEFAULT 1.0")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN settledTimestamp INTEGER DEFAULT NULL")
             }
         }
     }
