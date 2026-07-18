@@ -75,9 +75,12 @@ class FirestorePOSRepository(
     }
 
     // ── Transactions ──
+    // Bounded to the most recent RECENT_TRANSACTIONS_LIMIT records — see the constant's doc
+    // comment for why this is a safety cap rather than true pagination.
     val transactions: Flow<List<TransactionRecord>> = callbackFlow {
         val listener = db.collection(TRANSACTIONS)
             .orderBy("timestamp", Query.Direction.DESCENDING)
+            .limit(RECENT_TRANSACTIONS_LIMIT)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) { reportListenerError("transactions", error); return@addSnapshotListener }
                 trySend(snapshot?.documents?.mapNotNull { it.toTransaction() } ?: emptyList())
@@ -86,8 +89,12 @@ class FirestorePOSRepository(
     }
 
     // ── Transaction Items ──
+    // Bounded the same way as [transactions]. Ordered by id (assigned sequentially at sale
+    // time, like timestamp) so this window stays aligned with the transactions window above.
     val allTransactionItems: Flow<List<TransactionItem>> = callbackFlow {
         val listener = db.collection(TRANSACTION_ITEMS)
+            .orderBy("id", Query.Direction.DESCENDING)
+            .limit(RECENT_TRANSACTION_ITEMS_LIMIT)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) { reportListenerError("transaction items", error); return@addSnapshotListener }
                 trySend(snapshot?.documents?.mapNotNull { it.toTransactionItem() } ?: emptyList())
@@ -368,6 +375,18 @@ class FirestorePOSRepository(
         private const val TRANSACTIONS = "transactions"
         private const val TRANSACTION_ITEMS = "transaction_items"
         private const val COUNTERS = "counters"
+
+        // Without a cap, these two listeners re-sync the entire sales history on every screen
+        // load, forever — fine at low volume, but it only gets slower and pricier as the
+        // business grows. This is a safety net, not real pagination: it bounds the worst case
+        // generously (years of typical small-shop volume) without changing any current
+        // behavior. If the shop ever grows enough to hit this limit, replace it with real
+        // cursor-based pagination in the Transactions screen (there is already a per-transaction
+        // getTransactionItems() query to build on) rather than raising these numbers —
+        // 10,000 is Firestore's hard maximum for a query's limit() clause, so
+        // RECENT_TRANSACTION_ITEMS_LIMIT can't go any higher.
+        private const val RECENT_TRANSACTIONS_LIMIT: Long = 3000
+        private const val RECENT_TRANSACTION_ITEMS_LIMIT: Long = 10000
     }
 }
 
@@ -380,8 +399,7 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
             name = getString("name") ?: "",
             category = getString("category") ?: "",
             stockLevel = getDouble("stockLevel") ?: 0.0,
-            lowStockThreshold = getDouble("lowStockThreshold") ?: 5.0,
-            imageUrl = getString("imageUrl")
+            lowStockThreshold = getDouble("lowStockThreshold") ?: 5.0
         )
     } catch (e: Exception) {
         Log.w(TAG, "Skipping malformed product ${id}", e); null
@@ -390,8 +408,7 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
 
 private fun Product.toMap(): Map<String, Any?> = mapOf(
     "id" to id, "name" to name, "category" to category,
-    "stockLevel" to stockLevel, "lowStockThreshold" to lowStockThreshold,
-    "imageUrl" to imageUrl
+    "stockLevel" to stockLevel, "lowStockThreshold" to lowStockThreshold
 )
 
 private fun com.google.firebase.firestore.DocumentSnapshot.toVariation(): ProductVariation? {

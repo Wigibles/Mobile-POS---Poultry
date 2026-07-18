@@ -100,7 +100,7 @@ app/src/main/java/com/example/
 ├── data/
 │   ├── Entities.kt          # Data models (Product, Transaction, etc.)
 │   ├── FirestoreRepository.kt  # Cloud database operations
-│   └── Repository.kt        # Utility functions (roundToCentavos, StockValidationResult)
+│   └── Money.kt             # Utility functions (roundToCentavos, StockValidationResult)
 ├── viewmodel/
 │   └── POSViewModel.kt      # State management, business logic
 ├── ui/
