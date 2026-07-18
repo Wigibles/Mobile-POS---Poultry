@@ -19,6 +19,17 @@ data class CartItem(
 
 class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel() {
 
+    // ── User-facing messages (errors + confirmations) surfaced to the UI as a snackbar/toast ──
+    private val _userMessages = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val userMessages: SharedFlow<String> = _userMessages.asSharedFlow()
+
+    private fun report(message: String) { _userMessages.tryEmit(message) }
+
+    init {
+        // Forward repository read/sync errors so silent data loss becomes visible.
+        viewModelScope.launch { repository.errors.collect { report(it) } }
+    }
+
     // ── Processing guards — prevent duplicate submissions ──
     private val _isProcessingTransaction = MutableStateFlow(false)
     val isProcessingTransaction: StateFlow<Boolean> = _isProcessingTransaction.asStateFlow()
@@ -155,34 +166,37 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
                 val items = _cartItems.value
                 if (items.isEmpty()) return@launch
 
-            val subtotal = items.sumOf { it.variation.price * it.quantity }.roundToCentavos()
-            val tax = 0.0
-            val discount = 0.0
-            val total = subtotal.roundToCentavos()
+                val subtotal = items.sumOf { it.variation.price * it.quantity }.roundToCentavos()
+                val tax = 0.0
+                val discount = 0.0
+                val total = subtotal.roundToCentavos()
 
-            val record = TransactionRecord(
-                customerName = if (status == "UNPAID") customerName else null,
-                status = status,
-                subtotal = subtotal,
-                tax = tax,
-                discount = discount,
-                totalAmount = total
-            )
-
-            val transactionItems = items.map { cartItem ->
-                TransactionItem(
-                    transactionId = 0, // will be replaced in repository
-                    productId = cartItem.product.id,
-                    productName = cartItem.product.name,
-                    variationName = cartItem.variation.name,
-                    price = cartItem.variation.price.roundToCentavos(),
-                    quantity = cartItem.quantity
+                val record = TransactionRecord(
+                    customerName = if (status == "UNPAID") customerName else null,
+                    status = status,
+                    subtotal = subtotal,
+                    tax = tax,
+                    discount = discount,
+                    totalAmount = total
                 )
-            }
 
-            repository.processTransaction(record, transactionItems)
-            clearCart()
-            onSuccess()
+                val transactionItems = items.map { cartItem ->
+                    TransactionItem(
+                        transactionId = 0, // will be replaced in repository
+                        productId = cartItem.product.id,
+                        productName = cartItem.product.name,
+                        variationName = cartItem.variation.name,
+                        price = cartItem.variation.price.roundToCentavos(),
+                        quantity = cartItem.quantity,
+                        multiplier = cartItem.variation.multiplier
+                    )
+                }
+
+                repository.processTransaction(record, transactionItems)
+                clearCart()
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to save sale — nothing was recorded. ${e.message ?: ""}".trim())
             } finally {
                 _isProcessingTransaction.value = false
             }
@@ -216,6 +230,8 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
                 repository.updateProduct(product, variationsList)
             }
             onSuccess()
+            } catch (e: Exception) {
+                report("Failed to save product. ${e.message ?: ""}".trim())
             } finally {
                 _isSavingProduct.value = false
             }
@@ -224,7 +240,11 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
 
     fun deleteProduct(product: Product) {
         viewModelScope.launch {
-            repository.deleteProduct(product)
+            try {
+                repository.deleteProduct(product)
+            } catch (e: Exception) {
+                report("Failed to delete product. ${e.message ?: ""}".trim())
+            }
         }
     }
 
@@ -235,15 +255,23 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
     // Category Management
     fun addCategory(name: String) {
         viewModelScope.launch {
-            repository.insertCategory(Category(name = name))
+            try {
+                repository.insertCategory(Category(name = name))
+            } catch (e: Exception) {
+                report("Failed to add category. ${e.message ?: ""}".trim())
+            }
         }
     }
 
     fun deleteCategory(category: Category, onBlocked: () -> Unit = {}) {
         viewModelScope.launch {
-            val deleted = repository.deleteCategory(category)
-            if (!deleted) {
-                onBlocked() // 6.8 — blocked because products still use this category
+            try {
+                val deleted = repository.deleteCategory(category)
+                if (!deleted) {
+                    onBlocked() // 6.8 — blocked because products still use this category
+                }
+            } catch (e: Exception) {
+                report("Failed to delete category. ${e.message ?: ""}".trim())
             }
         }
     }
@@ -251,29 +279,39 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
     // 6.3 — Mark an unpaid transaction as paid (settle balance)
     fun markTransactionAsPaid(transactionId: Int) {
         viewModelScope.launch {
-            repository.markTransactionAsPaid(transactionId)
+            try {
+                repository.markTransactionAsPaid(transactionId)
+            } catch (e: Exception) {
+                report("Failed to mark as paid. ${e.message ?: ""}".trim())
+            }
         }
     }
 
     // 6.6 — Void a transaction and restore stock
     fun voidTransaction(transaction: TransactionRecord) {
         viewModelScope.launch {
-            repository.voidTransaction(transaction)
+            try {
+                repository.voidTransaction(transaction)
+            } catch (e: Exception) {
+                report("Failed to void transaction. ${e.message ?: ""}".trim())
+            }
         }
     }
 
     // 6.6 — Delete transaction WITH stock restoration
     fun deleteTransactionWithStockRestore(transaction: TransactionRecord) {
         viewModelScope.launch {
-            repository.deleteTransactionWithStockRestore(transaction)
+            try {
+                repository.deleteTransactionWithStockRestore(transaction)
+            } catch (e: Exception) {
+                report("Failed to delete transaction. ${e.message ?: ""}".trim())
+            }
         }
     }
 
     // Legacy delete (kept for backward compatibility, but prefer deleteTransactionWithStockRestore)
     fun deleteTransaction(transaction: TransactionRecord) {
-        viewModelScope.launch {
-            repository.deleteTransactionWithStockRestore(transaction)
-        }
+        deleteTransactionWithStockRestore(transaction)
     }
 
     // 6.4 — Get customer name suggestions for autocomplete
@@ -282,7 +320,11 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
 
     fun loadCustomerSuggestions() {
         viewModelScope.launch {
-            _customerSuggestions.value = repository.getUnpaidCustomerNames()
+            try {
+                _customerSuggestions.value = repository.getUnpaidCustomerNames()
+            } catch (e: Exception) {
+                report("Couldn't load customer suggestions. ${e.message ?: ""}".trim())
+            }
         }
     }
 
@@ -294,12 +336,16 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
         onResult: (StockValidationResult) -> Unit
     ) {
         viewModelScope.launch {
-            val result = repository.validateStockAvailability(
-                productId = product.id,
-                variationId = variation.id,
-                requestedQuantity = requestedQuantity
-            )
-            onResult(result)
+            try {
+                val result = repository.validateStockAvailability(
+                    productId = product.id,
+                    variationId = variation.id,
+                    requestedQuantity = requestedQuantity
+                )
+                onResult(result)
+            } catch (e: Exception) {
+                report("Couldn't check stock. ${e.message ?: ""}".trim())
+            }
         }
     }
 
@@ -316,6 +362,8 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
             try {
                 val count = repository.clearAllData()
                 onResult(count)
+            } catch (e: Exception) {
+                report("Failed to clear data. ${e.message ?: ""}".trim())
             } finally {
                 _isClearingData.value = false
             }
@@ -333,6 +381,8 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
             try {
                 val total = repository.countAllRecords()
                 onResult(total)
+            } catch (e: Exception) {
+                report("Sync check failed. ${e.message ?: ""}".trim())
             } finally {
                 _isSyncing.value = false
             }

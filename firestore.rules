@@ -1,0 +1,96 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Firestore security rules for Alyn's Poultry POS.
+//
+// IMPORTANT: These rules are NOT applied automatically. Deploy them from the
+// Firebase console (Firestore Database → Rules → paste → Publish) or via the
+// Firebase CLI (`firebase deploy --only firestore:rules`).
+//
+// This app currently has NO user authentication (firebase-auth is commented out
+// in app/build.gradle.kts), so the rules below cannot key off request.auth.
+// Two things protect your data instead:
+//
+//   1. App Check (already a dependency: firebase-appcheck-recaptcha).
+//      Turn ON enforcement for Cloud Firestore in the Firebase console
+//      (App Check → APIs → Cloud Firestore → Enforce). This ensures only
+//      requests coming from your genuine app are accepted — it is the main
+//      thing standing between your data and anyone who finds the API key.
+//
+//   2. The schema validation below, which rejects malformed writes so a bad
+//      client can't corrupt documents your app then fails to parse.
+//
+// RECOMMENDED HARDENING: add real sign-in. Uncomment `libs.firebase.auth`,
+// call FirebaseAuth.getInstance().signInAnonymously() (or a real login) at app
+// start, then replace every `isValid...()` guard below with
+// `request.auth != null && isValid...()`. That ties every read/write to an
+// authenticated session on top of App Check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isNum(v)  { return v is number; }
+    function isStr(v)  { return v is string; }
+
+    match /products/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','name','category','stockLevel','lowStockThreshold'])
+                   && isNum(request.resource.data.id)
+                   && isStr(request.resource.data.name)
+                   && isStr(request.resource.data.category)
+                   && isNum(request.resource.data.stockLevel)
+                   && isNum(request.resource.data.lowStockThreshold);
+      allow delete: if true;
+    }
+
+    match /product_variations/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','productId','name','price','multiplier'])
+                   && isNum(request.resource.data.id)
+                   && isNum(request.resource.data.productId)
+                   && isStr(request.resource.data.name)
+                   && isNum(request.resource.data.price)
+                   && isNum(request.resource.data.multiplier);
+      allow delete: if true;
+    }
+
+    match /categories/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','name'])
+                   && isNum(request.resource.data.id)
+                   && isStr(request.resource.data.name);
+      allow delete: if true;
+    }
+
+    match /transactions/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','status','timestamp','subtotal','tax','discount','totalAmount'])
+                   && isNum(request.resource.data.id)
+                   && isStr(request.resource.data.status)
+                   && isNum(request.resource.data.timestamp)
+                   && isNum(request.resource.data.totalAmount);
+      allow delete: if true;
+    }
+
+    match /transaction_items/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','transactionId','productId','quantity','multiplier'])
+                   && isNum(request.resource.data.id)
+                   && isNum(request.resource.data.transactionId)
+                   && isNum(request.resource.data.productId)
+                   && isNum(request.resource.data.quantity)
+                   && isNum(request.resource.data.multiplier);
+      allow delete: if true;
+    }
+
+    // Atomic ID counters — { value: <number> }.
+    match /counters/{name} {
+      allow read: if true;
+      allow write: if isNum(request.resource.data.value);
+      allow delete: if true;
+    }
+
+    // Anything not matched above is denied by default.
+  }
+}

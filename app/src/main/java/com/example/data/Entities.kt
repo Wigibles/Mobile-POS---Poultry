@@ -73,5 +73,8 @@ data class TransactionItem(
     val productName: String,
     val variationName: String,
     val price: Double,
-    val quantity: Double
+    val quantity: Double,
+    // Base-unit multiplier captured at sale time so stock restore on void/delete
+    // is always accurate even if the variation's multiplier is edited later.
+    val multiplier: Double = 1.0
 )
