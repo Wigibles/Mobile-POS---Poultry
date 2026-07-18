@@ -134,8 +134,13 @@ fun POSScreen(
                 leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(18.dp)) },
                 trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { viewModel.updateSearchQuery("") }) { Icon(Icons.Default.Close, "Clear", tint = TextMuted, modifier = Modifier.size(18.dp)) } },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceLight, unfocusedContainerColor = SurfaceLight, focusedBorderColor = CoralPrimary, unfocusedBorderColor = BorderLight),
+                shape = RoundedCornerShape(28.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = SurfaceLight,
+                    unfocusedContainerColor = SurfaceLight,
+                    focusedBorderColor = CoralPrimary,
+                    unfocusedBorderColor = BorderLight
+                ),
                 singleLine = true
             )
 
@@ -195,8 +200,9 @@ fun POSScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth().clickable { if (cartItems.isNotEmpty()) showCartSheet = true },
                 color = if (cartItems.isNotEmpty()) CoralPrimary else SurfaceLight,
-                shadowElevation = if (cartItems.isNotEmpty()) 8.dp else 0.dp,
-                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                shadowElevation = 0.dp,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                border = if (cartItems.isEmpty()) BorderStroke(1.dp, BorderLight) else null
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),

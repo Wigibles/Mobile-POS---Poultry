@@ -125,164 +125,67 @@ fun DashboardScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 2. Stats Grid (Today's Sales, Transactions, Splits, Avg Ticket)
-        Row(modifier = Modifier.fillMaxWidth()) {
-            // Left Column: Today's Sales Card & Splits
-            Card(
-                modifier = Modifier
-                    .weight(1.2f)
-                    .padding(end = 6.dp),
-                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(CoralPrimary)
-                            .padding(vertical = 8.dp, horizontal = 12.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Text(
-                            text = "Today's Sales",
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = currencyFormatter.format(stats.totalSalesToday).replace("PHP", "₱"),
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Black,
-                            color = TextDark,
-                            fontSize = 24.sp
-                        )
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Paid and Unpaid split icons & values
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Payments,
-                                contentDescription = "Paid",
-                                tint = ColorPaid,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = currencyFormatter.format(stats.paidToday).replace("PHP", "₱"),
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextMuted
-                                )
-                            )
+        // 2. Stats Grid — modern flat cards
+        // Today's Sales — main card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CoralPrimary),
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Text("Today's Sales", style = MaterialTheme.typography.labelLarge.copy(color = Color.White.copy(alpha = 0.8f)))
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = currencyFormatter.format(stats.totalSalesToday).replace("PHP", "₱"),
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold, color = Color.White, fontSize = 32.sp)
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Paid tag
+                    Surface(color = Color.White.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp)) {
+                        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Payments, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(currencyFormatter.format(stats.paidToday).replace("PHP", "₱"), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = Color.White))
                         }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.CreditCard,
-                                contentDescription = "Unpaid",
-                                tint = ColorUnpaid,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = currencyFormatter.format(stats.unpaidToday).replace("PHP", "₱"),
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextMuted
-                                )
-                            )
+                    }
+                    // Unpaid tag
+                    Surface(color = Color.White.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp)) {
+                        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CreditCard, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(currencyFormatter.format(stats.unpaidToday).replace("PHP", "₱"), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = Color.White))
                         }
                     }
                 }
             }
+        }
 
-            // Right Column: Transactions & Ticket Size
-            Column(
-                modifier = Modifier
-                    .weight(0.8f)
-                    .padding(start = 6.dp)
+        Spacer(Modifier.height(16.dp))
+
+        // Secondary stats row
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Card(
+                modifier = Modifier.weight(1f),
+                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                shape = RoundedCornerShape(20.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(bottom = 6.dp),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Transactions\nToday",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextMuted,
-                                textAlign = TextAlign.Center
-                            ),
-                            lineHeight = 14.sp
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "${stats.salesCount} Sales",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = CoralPrimary
-                            )
-                        )
-                    }
+                Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("${stats.salesCount}", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold, color = TextDark, fontSize = 28.sp))
+                    Text("Transactions", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
                 }
-
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(top = 6.dp),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Avg. Ticket Size",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextMuted,
-                                textAlign = TextAlign.Center
-                            )
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = currencyFormatter.format(stats.avgTicketSize).replace("PHP", "₱"),
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = CoralPrimary
-                            )
-                        )
-                    }
+            }
+            Card(
+                modifier = Modifier.weight(1f),
+                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                shape = RoundedCornerShape(20.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(currencyFormatter.format(stats.avgTicketSize).replace("PHP", "₱"), style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold, color = TextDark, fontSize = 28.sp))
+                    Text("Avg Ticket", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
                 }
             }
         }
@@ -290,80 +193,40 @@ fun DashboardScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         // 3. Low Stock Products Section
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Low Stock Products",
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = TextDark
-                )
-            )
-            Text(
-                text = "View more",
-                style = MaterialTheme.typography.bodySmall.copy(
-                    color = TextMuted,
-                    fontWeight = FontWeight.Bold
-                ),
-                modifier = Modifier.clickable { viewModel.navigateTo("INVENTORY") }
-            )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Low Stock", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
+            Text("View all", fontSize = 12.sp, color = CoralPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { viewModel.navigateTo("INVENTORY") })
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
 
         if (lowStockList.isEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(20.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Stock OK",
-                        tint = ColorPaid,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "All stock levels are sufficient",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            color = TextMuted,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
+                Row(modifier = Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    Icon(Icons.Default.CheckCircle, null, tint = ColorPaid, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("All stock levels are sufficient", style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted))
                 }
             }
         } else {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 4.dp)
-            ) {
-                items(lowStockList) { product ->
-                    LowStockCard(product = product)
-                }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 4.dp)) {
+                items(lowStockList) { product -> LowStockCard(product = product) }
             }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // 4. Sales Chart with period filters
+        // 4. Sales Chart — modern flat card
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
         ) {
             Column(
                 modifier = Modifier.padding(16.dp)
@@ -583,12 +446,12 @@ fun LowStockCard(product: Product) {
             // Emojis/Icons
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(BackgroundLight),
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(CoralPrimary.copy(alpha = 0.08f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = emoji, fontSize = 20.sp)
+                Text(text = emoji, fontSize = 22.sp)
             }
 
             Spacer(modifier = Modifier.height(8.dp))

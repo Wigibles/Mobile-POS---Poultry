@@ -2,28 +2,30 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// "Natural Tones" organic green primary theme matching the requested aesthetic
-val CoralPrimary = Color(0xFF386B01)     // Forest/Olive Green (#386B01)
-val CoralSecondary = Color(0xFF558B12)   // Mid-tone Green
-val SoftOrange = Color(0xFF83B63F)       // Soft Yellow-Green accent
+// Modern Flat Design Palette — Clean, minimal, high contrast
+val CoralPrimary = Color(0xFF2E7D32)        // Deep Green — main brand color
+val CoralSecondary = Color(0xFF43A047)      // Lighter green for accents
+val SoftOrange = Color(0xFF66BB6A)          // Soft green for highlights
 
-// Neutral colors (Warm, organic cream and soft sage)
-val BackgroundLight = Color(0xFFFBFDF8)   // Cream/Light Sage Background (#FBFDF8)
-val SurfaceLight = Color(0xFFFFFFFF)      // Pure White for Cards
-val TextDark = Color(0xFF191C19)          // Deep Charcoal-Green text (#191C19)
-val TextMuted = Color(0xFF6B7266)         // Soft Muted Olive-Gray text
-val BorderLight = Color(0xFFDCE5D5)       // Soft Sage Border (#DCE5D5)
+// Neutral colors — warm grays for modern flat feel
+val BackgroundLight = Color(0xFFF5F5F5)     // Light gray background (#F5F5F5)
+val SurfaceLight = Color(0xFFFFFFFF)        // Pure White for Cards
+val TextDark = Color(0xFF1A1A1A)            // Near-black for text (#1A1A1A)
+val TextMuted = Color(0xFF757575)           // Medium gray for secondary text
+val BorderLight = Color(0xFFE0E0E0)         // Light gray borders (#E0E0E0)
+val SurfaceVariant = Color(0xFFF0F0F0)      // Slightly darker surface for contrast
 
-// Status colors aligned with Natural Tones and error rules
-val ColorPaid = Color(0xFF386B01)         // Theme green for Paid
-val ColorUnpaid = Color(0xFFBA1A1A)       // Terracotta Red for Unpaid (#BA1A1A)
-val ColorLowStock = Color(0xFFBA1A1A)     // Red Alert for Low Stock
+// Status colors
+val ColorPaid = Color(0xFF2E7D32)           // Green for Paid
+val ColorUnpaid = Color(0xFFE53935)          // Clean Red for Unpaid
+val ColorLowStock = Color(0xFFFF9800)        // Orange for Low Stock warnings
+val ColorOverdue = Color(0xFFD32F2F)         // Darker red for overdue
 
-// Dark Theme Colors (Dark Olive/Forest theme)
-val CoralPrimaryDark = Color(0xFF9CD65D)   // Vibrant Light Green
-val BackgroundDark = Color(0xFF11140E)    // Near-black Olive background
-val SurfaceDark = Color(0xFF191C16)       // Dark Sage Card Surface
-val TextLight = Color(0xFFE2E3DC)         // Light Gray-Green text
-val TextMutedDark = Color(0xFF8C9384)     // Muted Gray-Green
-val BorderDark = Color(0xFF42493D)        // Dark Sage Border
+// Dark Theme Colors
+val CoralPrimaryDark = Color(0xFF66BB6A)     // Light Green
+val BackgroundDark = Color(0xFF121212)       // Near-black background
+val SurfaceDark = Color(0xFF1E1E1E)          // Dark Card Surface
+val TextLight = Color(0xFFE0E0E0)            // Light text
+val TextMutedDark = Color(0xFF9E9E9E)        // Muted gray
+val BorderDark = Color(0xFF333333)           // Dark border
 

@@ -137,13 +137,13 @@ fun InventoryScreen(
                 Button(
                     onClick = { startNewProductForm() },
                     colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                     modifier = Modifier.testTag("add_product_fab")
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(2.dp))
-                    Text("Product", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Icon(Icons.Default.Add, contentDescription = "Add", tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("New Product", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
             }
         }
@@ -198,24 +198,32 @@ fun InventoryScreen(
                     Icon(
                         imageVector = Icons.Default.Inventory,
                         contentDescription = "Empty Inventory",
-                        tint = TextMuted.copy(alpha = 0.5f),
-                        modifier = Modifier.size(56.dp)
+                        tint = TextMuted.copy(alpha = 0.3f),
+                        modifier = Modifier.size(72.dp)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (products.isEmpty()) "Your inventory is empty" else "No products in this category",
+                        text = if (products.isEmpty()) "Empty Inventory" else "No matching products",
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = TextMuted
+                            fontWeight = FontWeight.Black,
+                            color = TextDark
                         )
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = if (products.isEmpty()) "Start by adding your first product to the catalog." else "Try changing your category filter.",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 32.dp)
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
                     if (products.isEmpty()) {
                         Button(
                             onClick = { startNewProductForm() },
-                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary)
+                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Add First Product", color = Color.White)
+                            Text("Add Product", color = Color.White)
                         }
                     }
                 }

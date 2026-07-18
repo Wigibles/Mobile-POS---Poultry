@@ -116,39 +116,61 @@ fun TransactionsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(BorderLight)
-                .padding(3.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(SurfaceVariant)
+                .padding(4.dp)
         ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(20.dp))
                     .background(if (activeViewTab == "ALL") SurfaceLight else Color.Transparent)
                     .clickable { activeViewTab = "ALL" }
-                    .padding(vertical = 10.dp),
+                    .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ReceiptLong, contentDescription = "All", tint = if (activeViewTab == "ALL") CoralPrimary else TextMuted, modifier = Modifier.size(18.dp))
+                    Icon(
+                        imageVector = Icons.Default.ReceiptLong,
+                        contentDescription = "All",
+                        tint = if (activeViewTab == "ALL") CoralPrimary else TextMuted,
+                        modifier = Modifier.size(20.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("All Transactions", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = if (activeViewTab == "ALL") CoralPrimary else TextMuted))
+                    Text(
+                        text = "All Records",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = if (activeViewTab == "ALL") CoralPrimary else TextMuted
+                        )
+                    )
                 }
             }
 
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(20.dp))
                     .background(if (activeViewTab == "UNPAID") SurfaceLight else Color.Transparent)
                     .clickable { activeViewTab = "UNPAID" }
-                    .padding(vertical = 10.dp),
+                    .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.PendingActions, contentDescription = "Unpaid", tint = if (activeViewTab == "UNPAID") ColorUnpaid else TextMuted, modifier = Modifier.size(18.dp))
+                    Icon(
+                        imageVector = Icons.Default.PendingActions,
+                        contentDescription = "Unpaid",
+                        tint = if (activeViewTab == "UNPAID") ColorUnpaid else TextMuted,
+                        modifier = Modifier.size(20.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Unpaid Debt Tabs", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = if (activeViewTab == "UNPAID") ColorUnpaid else TextMuted))
+                    Text(
+                        text = "Unpaid Tabs",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = if (activeViewTab == "UNPAID") ColorUnpaid else TextMuted
+                        )
+                    )
                 }
             }
         }
@@ -307,16 +329,23 @@ fun TransactionsScreen(
                     Icon(
                         imageVector = Icons.Default.Receipt,
                         contentDescription = "No Txs",
-                        tint = TextMuted,
-                        modifier = Modifier.size(64.dp)
+                        tint = TextMuted.copy(alpha = 0.3f),
+                        modifier = Modifier.size(72.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "No matching transactions",
+                        text = "No records found",
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = TextMuted
+                            fontWeight = FontWeight.Black,
+                            color = TextDark
                         )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Try adjusting your filters or date range to see more results.",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 32.dp)
                     )
                 }
             }

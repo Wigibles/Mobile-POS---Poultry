@@ -8,34 +8,43 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-
-private val DarkColorScheme = darkColorScheme(
-    primary = CoralPrimaryDark,
-    secondary = CoralSecondary,
-    background = BackgroundDark,
-    surface = SurfaceDark,
-    onPrimary = SurfaceDark,
-    onBackground = TextLight,
-    onSurface = TextLight,
-    outline = BorderDark
-)
 
 private val LightColorScheme = lightColorScheme(
     primary = CoralPrimary,
+    onPrimary = Color.White,
+    primaryContainer = CoralPrimary.copy(alpha = 0.1f),
     secondary = CoralSecondary,
     background = BackgroundLight,
     surface = SurfaceLight,
-    onPrimary = SurfaceLight,
+    surfaceVariant = SurfaceVariant,
     onBackground = TextDark,
     onSurface = TextDark,
-    outline = BorderLight
+    onSurfaceVariant = TextMuted,
+    outline = BorderLight,
+    outlineVariant = BorderLight.copy(alpha = 0.5f),
+    error = ColorUnpaid
+)
+
+private val DarkColorScheme = darkColorScheme(
+    primary = CoralPrimaryDark,
+    onPrimary = BackgroundDark,
+    primaryContainer = CoralPrimaryDark.copy(alpha = 0.15f),
+    secondary = CoralSecondary,
+    background = BackgroundDark,
+    surface = SurfaceDark,
+    onBackground = TextLight,
+    onSurface = TextLight,
+    onSurfaceVariant = TextMutedDark,
+    outline = BorderDark,
+    error = ColorUnpaid
 )
 
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = false, // Set to false to force our custom beautiful theme by default
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
