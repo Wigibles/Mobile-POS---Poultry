@@ -8,7 +8,6 @@ import com.example.data.StockValidationResult
 import com.example.data.roundToCentavos
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
 import java.util.*
 
 data class CartItem(
@@ -404,7 +403,7 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
 
     // Dashboard Calculations & State Selectors (Dynamic)
     val dashboardStats = transactions.map { txList ->
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val sdf = shopDateFormat("yyyy-MM-dd")
         val todayStr = sdf.format(Date())
 
         val todayTxs = txList.filter {
@@ -438,8 +437,8 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
 
     // Chart data — reacts to period filter for weekly / monthly / yearly views
     val salesChartData = combine(transactions, _chartPeriod) { txList, period ->
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val cal = Calendar.getInstance()
+        val sdf = shopDateFormat("yyyy-MM-dd")
+        val cal = shopCalendar()
         val items = mutableListOf<ChartDataPoint>()
 
         when (period) {
@@ -448,7 +447,7 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
                     cal.time = Date()
                     cal.add(Calendar.DAY_OF_YEAR, -i)
                     val dateStr = sdf.format(cal.time)
-                    val label = SimpleDateFormat("EEE", Locale.getDefault()).format(cal.time)
+                    val label = shopDateFormat("EEE").format(cal.time)
                     val total = txList.filter { sdf.format(Date(it.timestamp)) == dateStr && it.status != "VOIDED" }.sumOf { it.totalAmount }
                     items.add(ChartDataPoint(label, total, dateStr))
                 }
@@ -506,7 +505,7 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
         _historyStatusFilter,
         _historyCustomerFilter
     ) { txList, date, status, customer ->
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val sdf = shopDateFormat("yyyy-MM-dd")
         txList.filter { tx ->
             val matchDate = date == null || sdf.format(Date(tx.timestamp)) == date
             val matchStatus = status == null || tx.status.equals(status, ignoreCase = true)

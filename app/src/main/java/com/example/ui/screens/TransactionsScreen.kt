@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.TransactionItem
 import com.example.data.TransactionRecord
+import com.example.data.shopDateFormat
 import com.example.ui.theme.*
 import com.example.viewmodel.POSViewModel
 import java.text.NumberFormat
@@ -52,7 +53,9 @@ fun TransactionsScreen(
 
     val currencyFormatter = remember { NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-PH")) }
     val sdf = remember { SimpleDateFormat("MMM dd, yyyy - h:mm a", Locale.getDefault()) }
-    val dateOnlyFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
+    // Pinned to the shop's fixed timezone so the date filter agrees with the ViewModel's
+    // own day-bucketing (dashboard, charts) regardless of this device's own clock/timezone.
+    val dateOnlyFormat = remember { shopDateFormat("yyyy-MM-dd") }
 
     // Dynamic dates list for date filtering
     val availableDates = remember(allTxs) {
