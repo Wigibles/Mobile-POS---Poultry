@@ -12,13 +12,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val LightColorScheme = lightColorScheme(
-    primary = CoralPrimary,
+    primary = BrandPrimary,
     onPrimary = Color.White,
-    primaryContainer = CoralPrimary.copy(alpha = 0.1f),
-    secondary = CoralSecondary,
+    primaryContainer = BrandPrimaryContainer,
+    secondary = BrandSecondary,
     background = BackgroundLight,
     surface = SurfaceLight,
     surfaceVariant = SurfaceVariant,
+    surfaceContainer = SurfaceContainer,
+    surfaceContainerHigh = SurfaceContainerHigh,
     onBackground = TextDark,
     onSurface = TextDark,
     onSurfaceVariant = TextMuted,
@@ -28,12 +30,14 @@ private val LightColorScheme = lightColorScheme(
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary = CoralPrimaryDark,
+    primary = BrandPrimaryDark,
     onPrimary = BackgroundDark,
-    primaryContainer = CoralPrimaryDark.copy(alpha = 0.15f),
-    secondary = CoralSecondary,
+    primaryContainer = BrandPrimaryDark.copy(alpha = 0.18f),
+    secondary = BrandSecondary,
     background = BackgroundDark,
     surface = SurfaceDark,
+    surfaceContainer = SurfaceContainerDark,
+    surfaceContainerHigh = SurfaceContainerDark,
     onBackground = TextLight,
     onSurface = TextLight,
     onSurfaceVariant = TextMutedDark,

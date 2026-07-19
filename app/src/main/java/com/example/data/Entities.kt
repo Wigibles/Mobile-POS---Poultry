@@ -45,3 +45,34 @@ data class TransactionItem(
     // is always accurate even if the variation's multiplier is edited later.
     val multiplier: Double = 1.0
 )
+
+enum class Role { ADMIN, CASHIER }
+
+// Synced across devices via Firestore (settings/auth doc) so a PIN change on one
+// device takes effect everywhere. Not hashed — a 4-digit PIN with no server secret
+// to protect gains nothing from hashing.
+data class AuthSettings(
+    val adminPin: String = "1234",
+    val cashierPin: String = "0000"
+)
+
+// Cash a cashier takes out of the till (e.g. their daily pay), logged for the owner
+// to audit later since they don't monitor daily operations in person.
+data class CashOutEntry(
+    val id: Int = 0,
+    val cashierName: String,
+    val amount: Double,
+    val note: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+// Money a family member borrowed from the store, tracked separately from employee
+// expenses. Binary outstanding/returned, like TransactionRecord's PAID/UNPAID.
+data class BorrowEntry(
+    val id: Int = 0,
+    val borrowerName: String,
+    val amount: Double,
+    val note: String? = null,
+    val timestamp: Long = System.currentTimeMillis(),
+    val returnedTimestamp: Long? = null // null = still outstanding
+)

@@ -6,6 +6,7 @@ import com.example.ui.screens.DashboardScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.POSViewModel
 import com.example.data.FirestorePOSRepository
+import com.example.data.SessionManager
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
@@ -26,7 +27,8 @@ class DashboardScreenshotTest {
   @Test
   fun dashboard_screenshot() {
     val repository = mock(FirestorePOSRepository::class.java)
-    val viewModel = POSViewModel(repository)
+    val sessionManager = mock(SessionManager::class.java)
+    val viewModel = POSViewModel(repository, sessionManager)
 
     composeTestRule.setContent {
       MyApplicationTheme {

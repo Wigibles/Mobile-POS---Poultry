@@ -102,6 +102,85 @@ class FirestorePOSRepository(
         awaitClose { listener.remove() }
     }
 
+    // ── Auth Settings (Admin/Cashier PINs) ──
+    // Single doc at settings/auth. A missing doc emits defaults without writing —
+    // avoids two devices racing to "create" it on first read; it's only written when
+    // Admin explicitly changes a PIN.
+    val authSettings: Flow<AuthSettings> = callbackFlow {
+        val listener = db.collection(SETTINGS).document(AUTH_DOC)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) { reportListenerError("auth settings", error); return@addSnapshotListener }
+                trySend(snapshot?.toAuthSettings() ?: AuthSettings())
+            }
+        awaitClose { listener.remove() }
+    }
+
+    // Written as one atomic doc (not two merged partial writes) since the security rule
+    // requires both adminPin and cashierPin to be present on every write to this doc.
+    suspend fun updatePins(adminPin: String, cashierPin: String) = withContext(Dispatchers.IO) {
+        db.collection(SETTINGS).document(AUTH_DOC)
+            .set(mapOf("adminPin" to adminPin, "cashierPin" to cashierPin)).await()
+    }
+
+    // ── Cash-Out Log ──
+    // Bounded the same way as [transactions] — see RECENT_TRANSACTIONS_LIMIT's doc comment.
+    val cashOutEntries: Flow<List<CashOutEntry>> = callbackFlow {
+        val listener = db.collection(CASH_OUTS)
+            .orderBy("timestamp", Query.Direction.DESCENDING)
+            .limit(RECENT_CASH_OUTS_LIMIT)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) { reportListenerError("cash-out log", error); return@addSnapshotListener }
+                trySend(snapshot?.documents?.mapNotNull { it.toCashOutEntry() } ?: emptyList())
+            }
+        awaitClose { listener.remove() }
+    }
+
+    suspend fun addCashOutEntry(entry: CashOutEntry): Int = withContext(Dispatchers.IO) {
+        val id = nextId(CASH_OUTS)
+        db.collection(CASH_OUTS).document("$id").set(entry.copy(id = id).toMap()).await()
+        id
+    }
+
+    suspend fun updateCashOutEntry(entry: CashOutEntry) = withContext(Dispatchers.IO) {
+        db.collection(CASH_OUTS).document("${entry.id}").set(entry.toMap()).await()
+    }
+
+    suspend fun deleteCashOutEntry(entry: CashOutEntry) = withContext(Dispatchers.IO) {
+        db.collection(CASH_OUTS).document("${entry.id}").delete().await()
+    }
+
+    // ── Family Borrowing Log ──
+    // Bounded the same way as [transactions] — see RECENT_TRANSACTIONS_LIMIT's doc comment.
+    val borrowEntries: Flow<List<BorrowEntry>> = callbackFlow {
+        val listener = db.collection(BORROWS)
+            .orderBy("timestamp", Query.Direction.DESCENDING)
+            .limit(RECENT_BORROWS_LIMIT)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) { reportListenerError("borrowing log", error); return@addSnapshotListener }
+                trySend(snapshot?.documents?.mapNotNull { it.toBorrowEntry() } ?: emptyList())
+            }
+        awaitClose { listener.remove() }
+    }
+
+    suspend fun addBorrowEntry(entry: BorrowEntry): Int = withContext(Dispatchers.IO) {
+        val id = nextId(BORROWS)
+        db.collection(BORROWS).document("$id").set(entry.copy(id = id).toMap()).await()
+        id
+    }
+
+    suspend fun updateBorrowEntry(entry: BorrowEntry) = withContext(Dispatchers.IO) {
+        db.collection(BORROWS).document("${entry.id}").set(entry.toMap()).await()
+    }
+
+    suspend fun markBorrowReturned(id: Int) = withContext(Dispatchers.IO) {
+        db.collection(BORROWS).document("$id")
+            .update(mapOf("returnedTimestamp" to System.currentTimeMillis())).await()
+    }
+
+    suspend fun deleteBorrowEntry(entry: BorrowEntry) = withContext(Dispatchers.IO) {
+        db.collection(BORROWS).document("${entry.id}").delete().await()
+    }
+
     fun getVariationsForProduct(productId: Int): Flow<List<ProductVariation>> = callbackFlow {
         val listener = db.collection(VARIATIONS)
             .whereEqualTo("productId", productId)
@@ -325,7 +404,7 @@ class FirestorePOSRepository(
     // ── Clear All Data (Settings) ── (batched in chunks; Firestore caps a batch at 500 writes)
     suspend fun clearAllData(): Int = withContext(Dispatchers.IO) {
         var deleted = 0
-        val collections = listOf(TRANSACTION_ITEMS, VARIATIONS, TRANSACTIONS, PRODUCTS, CATEGORIES, COUNTERS)
+        val collections = listOf(TRANSACTION_ITEMS, VARIATIONS, TRANSACTIONS, PRODUCTS, CATEGORIES, COUNTERS, CASH_OUTS, BORROWS)
         for (col in collections) {
             val docs = db.collection(col).get().await().documents
             docs.chunked(400).forEach { chunk ->
@@ -341,7 +420,7 @@ class FirestorePOSRepository(
     // ── Count All Records (Settings sync) ──
     suspend fun countAllRecords(): Int = withContext(Dispatchers.IO) {
         var total = 0
-        val collections = listOf(PRODUCTS, VARIATIONS, CATEGORIES, TRANSACTIONS, TRANSACTION_ITEMS)
+        val collections = listOf(PRODUCTS, VARIATIONS, CATEGORIES, TRANSACTIONS, TRANSACTION_ITEMS, CASH_OUTS, BORROWS)
         for (col in collections) {
             total += db.collection(col).get().await().size()
         }
@@ -375,6 +454,10 @@ class FirestorePOSRepository(
         private const val TRANSACTIONS = "transactions"
         private const val TRANSACTION_ITEMS = "transaction_items"
         private const val COUNTERS = "counters"
+        private const val SETTINGS = "settings"
+        private const val AUTH_DOC = "auth"
+        private const val CASH_OUTS = "cash_outs"
+        private const val BORROWS = "borrows"
 
         // Without a cap, these two listeners re-sync the entire sales history on every screen
         // load, forever — fine at low volume, but it only gets slower and pricier as the
@@ -387,6 +470,8 @@ class FirestorePOSRepository(
         // RECENT_TRANSACTION_ITEMS_LIMIT can't go any higher.
         private const val RECENT_TRANSACTIONS_LIMIT: Long = 3000
         private const val RECENT_TRANSACTION_ITEMS_LIMIT: Long = 10000
+        private const val RECENT_CASH_OUTS_LIMIT: Long = 3000
+        private const val RECENT_BORROWS_LIMIT: Long = 3000
     }
 }
 
@@ -488,3 +573,51 @@ private fun TransactionItem.toMap(): Map<String, Any?> = mapOf(
     "productName" to productName, "variationName" to variationName,
     "price" to price, "quantity" to quantity, "multiplier" to multiplier
 )
+
+private fun com.google.firebase.firestore.DocumentSnapshot.toCashOutEntry(): CashOutEntry? {
+    return try {
+        CashOutEntry(
+            id = getLong("id")?.toInt() ?: return null,
+            cashierName = getString("cashierName") ?: "",
+            amount = getDouble("amount") ?: 0.0,
+            note = getString("note"),
+            timestamp = getLong("timestamp") ?: System.currentTimeMillis()
+        )
+    } catch (e: Exception) {
+        Log.w(TAG, "Skipping malformed cash-out entry ${id}", e); null
+    }
+}
+
+private fun CashOutEntry.toMap(): Map<String, Any?> = mapOf(
+    "id" to id, "cashierName" to cashierName, "amount" to amount,
+    "note" to note, "timestamp" to timestamp
+)
+
+private fun com.google.firebase.firestore.DocumentSnapshot.toBorrowEntry(): BorrowEntry? {
+    return try {
+        BorrowEntry(
+            id = getLong("id")?.toInt() ?: return null,
+            borrowerName = getString("borrowerName") ?: "",
+            amount = getDouble("amount") ?: 0.0,
+            note = getString("note"),
+            timestamp = getLong("timestamp") ?: System.currentTimeMillis(),
+            returnedTimestamp = getLong("returnedTimestamp")
+        )
+    } catch (e: Exception) {
+        Log.w(TAG, "Skipping malformed borrow entry ${id}", e); null
+    }
+}
+
+private fun BorrowEntry.toMap(): Map<String, Any?> = mapOf(
+    "id" to id, "borrowerName" to borrowerName, "amount" to amount,
+    "note" to note, "timestamp" to timestamp, "returnedTimestamp" to returnedTimestamp
+)
+
+private fun com.google.firebase.firestore.DocumentSnapshot.toAuthSettings(): AuthSettings {
+    if (!exists()) return AuthSettings()
+    val defaults = AuthSettings()
+    return AuthSettings(
+        adminPin = getString("adminPin") ?: defaults.adminPin,
+        cashierPin = getString("cashierPin") ?: defaults.cashierPin
+    )
+}

@@ -91,6 +91,38 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    match /cash_outs/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','cashierName','amount','timestamp'])
+                   && isNum(request.resource.data.id)
+                   && isStr(request.resource.data.cashierName)
+                   && isNum(request.resource.data.amount)
+                   && isNum(request.resource.data.timestamp);
+      allow delete: if true;
+    }
+
+    match /borrows/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','borrowerName','amount','timestamp'])
+                   && isNum(request.resource.data.id)
+                   && isStr(request.resource.data.borrowerName)
+                   && isNum(request.resource.data.amount)
+                   && isNum(request.resource.data.timestamp);
+      allow delete: if true;
+    }
+
+    // Admin/Cashier login PINs — { adminPin: <string>, cashierPin: <string> }.
+    // Unlike every other collection here, delete is NOT allowed: deleting this doc would
+    // silently reset both PINs back to the app's hardcoded defaults, bypassing whatever
+    // Admin configured. Overwriting via write is still how PINs are changed.
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['adminPin','cashierPin'])
+                   && isStr(request.resource.data.adminPin)
+                   && isStr(request.resource.data.cashierPin);
+      allow delete: if false;
+    }
+
     // Anything not matched above is denied by default.
   }
 }

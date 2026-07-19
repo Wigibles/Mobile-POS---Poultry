@@ -1,27 +1,34 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.data.Role
 import com.example.data.TransactionItem
 import com.example.data.TransactionRecord
 import com.example.data.shopDateFormat
@@ -41,6 +48,8 @@ fun TransactionsScreen(
     val allTxs by viewModel.transactions.collectAsState()
     val allItems by viewModel.allTransactionItems.collectAsState()
     val unpaidCustomers by viewModel.unpaidCustomers.collectAsState()
+    val currentRole by viewModel.currentRole.collectAsState()
+    val isAdmin = currentRole == Role.ADMIN
 
     val dateFilter by viewModel.historyDateFilter.collectAsState()
     val statusFilter by viewModel.historyStatusFilter.collectAsState()
@@ -119,14 +128,14 @@ fun TransactionsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(SurfaceVariant)
+                .clip(ShapeXL)
+                .background(SurfaceContainer)
                 .padding(4.dp)
         ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(ShapeLG)
                     .background(if (activeViewTab == "ALL") SurfaceLight else Color.Transparent)
                     .clickable { activeViewTab = "ALL" }
                     .padding(vertical = 12.dp),
@@ -134,9 +143,9 @@ fun TransactionsScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.ReceiptLong,
+                        imageVector = Icons.AutoMirrored.Filled.ReceiptLong,
                         contentDescription = "All",
-                        tint = if (activeViewTab == "ALL") CoralPrimary else TextMuted,
+                        tint = if (activeViewTab == "ALL") BrandPrimary else TextMuted,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -144,7 +153,7 @@ fun TransactionsScreen(
                         text = "All Records",
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            color = if (activeViewTab == "ALL") CoralPrimary else TextMuted
+                            color = if (activeViewTab == "ALL") BrandPrimary else TextMuted
                         )
                     )
                 }
@@ -153,7 +162,7 @@ fun TransactionsScreen(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(ShapeLG)
                     .background(if (activeViewTab == "UNPAID") SurfaceLight else Color.Transparent)
                     .clickable { activeViewTab = "UNPAID" }
                     .padding(vertical = 12.dp),
@@ -189,14 +198,14 @@ fun TransactionsScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     colors = CardDefaults.cardColors(containerColor = ColorUnpaid.copy(alpha = 0.08f)),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = ShapeSM
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(currencyFormatter.format(totalReceivables).replace("PHP", "₱"), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = ColorUnpaid))
+                            Text(formatPeso(currencyFormatter, totalReceivables), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = ColorUnpaid))
                             Text("Total Receivables", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -229,13 +238,13 @@ fun TransactionsScreen(
                         onClick = { showDatePicker = true },
                         label = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.CalendarMonth, null, Modifier.size(14.dp), tint = if (dateFilter != null) Color.White else TextMuted)
+                                Icon(Icons.Default.CalendarMonth, null, Modifier.size(16.dp), tint = if (dateFilter != null) Color.White else TextMuted)
                                 Spacer(Modifier.width(3.dp))
-                                Text(if (dateFilter != null) SimpleDateFormat("MMM dd", Locale.getDefault()).format(dateOnlyFormat.parse(dateFilter)!!) else "Dates", fontSize = 10.sp)
+                                Text(if (dateFilter != null) SimpleDateFormat("MMM dd", Locale.getDefault()).format(dateOnlyFormat.parse(dateFilter)!!) else "Dates", fontSize = 12.sp)
                             }
                         },
-                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = CoralPrimary, selectedLabelColor = Color.White, containerColor = BorderLight, labelColor = TextDark),
-                        border = null, modifier = Modifier.height(26.dp)
+                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
+                        border = null, modifier = Modifier.height(32.dp)
                     )
                 }
 
@@ -246,13 +255,13 @@ fun TransactionsScreen(
                         onClick = { showCustomerProfile = true },
                         label = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.PersonSearch, null, Modifier.size(14.dp), tint = TextMuted)
+                                Icon(Icons.Default.PersonSearch, null, Modifier.size(16.dp), tint = TextMuted)
                                 Spacer(Modifier.width(3.dp))
-                                Text("Customers", fontSize = 10.sp)
+                                Text("Customers", fontSize = 12.sp)
                             }
                         },
-                        colors = FilterChipDefaults.filterChipColors(containerColor = BorderLight, labelColor = TextDark),
-                        border = null, modifier = Modifier.height(26.dp)
+                        colors = FilterChipDefaults.filterChipColors(containerColor = SurfaceContainer, labelColor = TextDark),
+                        border = null, modifier = Modifier.height(32.dp)
                     )
                 }
 
@@ -263,11 +272,11 @@ fun TransactionsScreen(
                             FilterChip(
                                 selected = statusFilter == key,
                                 onClick = { viewModel.setHistoryFilters(dateFilter, if (statusFilter == key) null else key, customerFilter) },
-                                label = { Text(label, fontSize = 10.sp) },
+                                label = { Text(label, fontSize = 12.sp) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = if (key == "PAID") ColorPaid else if (key == "UNPAID") ColorUnpaid else CoralPrimary,
-                                    selectedLabelColor = Color.White, containerColor = BorderLight, labelColor = TextDark
-                                ), border = null, modifier = Modifier.height(26.dp)
+                                    selectedContainerColor = if (key == "PAID") ColorPaid else if (key == "UNPAID") ColorUnpaid else BrandPrimary,
+                                    selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark
+                                ), border = null, modifier = Modifier.height(32.dp)
                             )
                         }
                     }
@@ -276,43 +285,68 @@ fun TransactionsScreen(
                         FilterChip(
                             selected = customerFilter == null,
                             onClick = { viewModel.setHistoryFilters(dateFilter, statusFilter, null) },
-                            label = { Text("All", fontSize = 10.sp) },
-                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = CoralPrimary, selectedLabelColor = Color.White, containerColor = BorderLight, labelColor = TextDark),
-                            border = null, modifier = Modifier.height(26.dp)
+                            label = { Text("All", fontSize = 12.sp) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
+                            border = null, modifier = Modifier.height(32.dp)
                         )
                     }
                     items(unpaidCustomers) { customer ->
                         FilterChip(
                             selected = customerFilter == customer,
                             onClick = { viewModel.setHistoryFilters(dateFilter, statusFilter, if (customerFilter == customer) null else customer) },
-                            label = { Text(customer, fontSize = 10.sp, maxLines = 1) },
-                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ColorUnpaid, selectedLabelColor = Color.White, containerColor = BorderLight, labelColor = TextDark),
-                            border = null, modifier = Modifier.height(26.dp)
+                            label = { Text(customer, fontSize = 12.sp, maxLines = 1) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ColorUnpaid, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
+                            border = null, modifier = Modifier.height(32.dp)
                         )
                     }
                 }
             }
 
-            // Fixed right side: sort + clear
+            // Fixed right side: sort + clear. Sort opens a menu of named options instead of
+            // blindly cycling four hidden states — recognition over recall.
             Row(verticalAlignment = Alignment.CenterVertically) {
+                var showSortMenu by remember { mutableStateOf(false) }
                 val sortLabel = when (sortOrder) { "oldest" -> "Oldest"; "highest" -> "Amount"; "overdue" -> "Overdue"; else -> "Newest" }
-                FilterChip(
-                    selected = sortOrder != "newest",
-                    onClick = { sortOrder = when (sortOrder) { "newest" -> "oldest"; "oldest" -> "highest"; "highest" -> "overdue"; else -> "newest" } },
-                    label = {
-                        Row {
-                            Icon(Icons.Default.SwapVert, null, Modifier.size(14.dp), tint = if (sortOrder != "newest") Color.White else TextMuted)
-                            Spacer(Modifier.width(3.dp))
-                            Text(sortLabel, fontSize = 10.sp)
+                Box {
+                    FilterChip(
+                        selected = sortOrder != "newest",
+                        onClick = { showSortMenu = true },
+                        label = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.SwapVert, null, Modifier.size(16.dp), tint = if (sortOrder != "newest") Color.White else TextMuted)
+                                Spacer(Modifier.width(3.dp))
+                                Text(sortLabel, fontSize = 12.sp)
+                            }
+                        },
+                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
+                        border = null, modifier = Modifier.height(32.dp)
+                    )
+                    DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                        listOf(
+                            "newest" to "Newest first",
+                            "oldest" to "Oldest first",
+                            "highest" to "Highest amount",
+                            "overdue" to "Overdue first"
+                        ).forEach { (key, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label, fontWeight = if (sortOrder == key) FontWeight.Bold else FontWeight.Normal) },
+                                leadingIcon = {
+                                    if (sortOrder == key) Icon(Icons.Default.Check, null, Modifier.size(18.dp), tint = BrandPrimary)
+                                    else Spacer(Modifier.size(18.dp))
+                                },
+                                onClick = { sortOrder = key; showSortMenu = false }
+                            )
                         }
-                    },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = CoralPrimary, selectedLabelColor = Color.White, containerColor = BorderLight, labelColor = TextDark),
-                    border = null, modifier = Modifier.height(26.dp)
-                )
+                    }
+                }
 
                 if (dateFilter != null || statusFilter != null || customerFilter != null) {
-                    Text("Clear", fontSize = 10.sp, color = ColorUnpaid, fontWeight = FontWeight.Bold,
-                        modifier = Modifier.clickable { viewModel.clearHistoryFilters() }.padding(horizontal = 4.dp))
+                    TextButton(
+                        onClick = { viewModel.clearHistoryFilters() },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("Clear", fontSize = 12.sp, color = ColorUnpaid, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -361,13 +395,14 @@ fun TransactionsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
             ) {
-                items(displayedTxs) { tx ->
+                items(displayedTxs, key = { it.id }) { tx ->
                     val txItems = allItems.filter { it.transactionId == tx.id }
                     TransactionCardItem(
                         transaction = tx,
                         items = txItems,
                         currencyFormatter = currencyFormatter,
                         dateFormatter = sdf,
+                        isAdmin = isAdmin,
                         onMarkPaid = { viewModel.markTransactionAsPaid(tx.id) },
                         onVoid = { viewModel.voidTransaction(tx) },
                         onDelete = { viewModel.deleteTransactionWithStockRestore(tx) }
@@ -415,7 +450,7 @@ fun TransactionsScreen(
             Dialog(onDismissRequest = { showCustomerProfile = false; selectedCustomerProfile = null; customerSearchQuery = "" }) {
                 Card(
                     modifier = Modifier.fillMaxWidth().fillMaxHeight(0.75f),
-                    shape = RoundedCornerShape(20.dp),
+                    shape = ShapeLG,
                     colors = CardDefaults.cardColors(containerColor = SurfaceLight)
                 ) {
                     Column(modifier = Modifier.fillMaxSize()) {
@@ -428,7 +463,7 @@ fun TransactionsScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (selectedCustomerProfile != null) {
                                     IconButton(onClick = { selectedCustomerProfile = null; customerSearchQuery = "" }, modifier = Modifier.size(32.dp)) {
-                                        Icon(Icons.Default.ArrowBack, "Back", tint = TextDark)
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextDark)
                                     }
                                 }
                                 Text(
@@ -452,9 +487,10 @@ fun TransactionsScreen(
                                 singleLine = true,
                                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(10.dp),
+                                shape = ShapeSM,
                                 colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = CoralPrimary, unfocusedBorderColor = BorderLight,
+                                    focusedBorderColor = BrandPrimary, unfocusedBorderColor = Color.Transparent,
+                                    focusedContainerColor = SurfaceContainer, unfocusedContainerColor = SurfaceContainer,
                                     focusedTextColor = TextDark, unfocusedTextColor = TextDark
                                 )
                             )
@@ -475,10 +511,10 @@ fun TransactionsScreen(
 
                                         Surface(
                                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 3.dp)
+                                                .shadow(elevation = 1.dp, shape = ShapeSM, clip = false)
                                                 .clickable { selectedCustomerProfile = customer },
                                             color = SurfaceLight,
-                                            shape = RoundedCornerShape(12.dp),
-                                            shadowElevation = 1.dp
+                                            shape = ShapeSM
                                         ) {
                                             Row(
                                                 modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -492,7 +528,7 @@ fun TransactionsScreen(
                                                         style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp))
                                                 }
                                                 Column(horizontalAlignment = Alignment.End) {
-                                                    Text(currencyFormatter.format(totalDebt).replace("PHP", "₱"),
+                                                    Text(formatPeso(currencyFormatter, totalDebt),
                                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = ColorUnpaid))
                                                 }
                                             }
@@ -512,14 +548,14 @@ fun TransactionsScreen(
                             Card(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                                 colors = CardDefaults.cardColors(containerColor = ColorUnpaid.copy(alpha = 0.06f)),
-                                shape = RoundedCornerShape(12.dp)
+                                shape = ShapeSM
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(14.dp),
                                     horizontalArrangement = Arrangement.SpaceEvenly
                                 ) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text(currencyFormatter.format(totalDebt).replace("PHP", "₱"),
+                                        Text(formatPeso(currencyFormatter, totalDebt),
                                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = ColorUnpaid))
                                         Text("Total Debt", fontSize = 10.sp, color = TextMuted)
                                     }
@@ -544,15 +580,14 @@ fun TransactionsScreen(
                                 items(customerTxs) { tx ->
                                     val txItems = allItems.filter { it.transactionId == tx.id }
                                     Card(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier.fillMaxWidth().shadow(elevation = 1.dp, shape = ShapeSM, clip = false),
                                         colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                                        shape = RoundedCornerShape(10.dp),
-                                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                                        shape = ShapeSM
                                     ) {
                                         Column(modifier = Modifier.padding(12.dp)) {
                                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                                 Text("Order #${tx.id}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                                                Text(currencyFormatter.format(tx.totalAmount).replace("PHP", "₱"),
+                                                Text(formatPeso(currencyFormatter, tx.totalAmount),
                                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Black, color = ColorUnpaid, fontSize = 13.sp))
                                             }
                                             Spacer(Modifier.height(2.dp))
@@ -598,6 +633,7 @@ fun TransactionCardItem(
     items: List<TransactionItem>,
     currencyFormatter: NumberFormat,
     dateFormatter: SimpleDateFormat,
+    isAdmin: Boolean,
     onMarkPaid: () -> Unit,
     onVoid: () -> Unit,
     onDelete: () -> Unit
@@ -619,39 +655,28 @@ fun TransactionCardItem(
         else -> ColorPaid
     }
 
-    val borderColor = when {
-        isVoided -> TextMuted.copy(alpha = 0.3f)
-        isOverdue -> ColorUnpaid.copy(alpha = 0.5f)
-        isUnpaid -> ColorUnpaid.copy(alpha = 0.3f)
-        else -> Color.Transparent
-    }
-
-    val cardModifier = if (isVoided) {
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
-            .clickable { expanded = !expanded }
-    } else if (isUnpaid) {
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
-            .clickable { expanded = !expanded }
-    } else {
-        Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
-    }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "chevronRotation"
+    )
 
     Card(
-        modifier = cardModifier,
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(elevation = if (isVoided) 0.dp else 2.dp, shape = ShapeMD, clip = false)
+            .clickable { expanded = !expanded },
         colors = CardDefaults.cardColors(
             containerColor = if (isVoided) SurfaceLight.copy(alpha = 0.6f) else SurfaceLight
         ),
-        shape = RoundedCornerShape(12.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        shape = ShapeMD,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = if (isOverdue) androidx.compose.foundation.BorderStroke(1.dp, ColorUnpaid.copy(alpha = 0.35f)) else null
     ) {
         Column(
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier.padding(16.dp).animateContentSize(
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium)
+            )
         ) {
             // Top Row (Transaction # & Status tag)
             Row(
@@ -680,20 +705,7 @@ fun TransactionCardItem(
                     )
                 }
 
-                // Payment Status Badge
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(statusColor.copy(alpha = 0.1f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = transaction.status,
-                        color = statusColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black
-                    )
-                }
+                StatusPill(text = transaction.status, color = statusColor)
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -703,8 +715,8 @@ fun TransactionCardItem(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(ColorUnpaid.copy(alpha = 0.05f))
+                        .clip(ShapeXS)
+                        .background(ColorUnpaid.copy(alpha = 0.06f))
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -726,8 +738,8 @@ fun TransactionCardItem(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(ColorPaid.copy(alpha = 0.05f))
+                        .clip(ShapeXS)
+                        .background(ColorPaid.copy(alpha = 0.06f))
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -768,12 +780,31 @@ fun TransactionCardItem(
                 }
 
                 Text(
-                    text = currencyFormatter.format(transaction.totalAmount).replace("PHP", "₱"),
+                    text = formatPeso(currencyFormatter, transaction.totalAmount),
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Black,
                         color = if (isVoided) TextMuted else if (isPaid) TextDark else ColorUnpaid
                     )
                 )
+            }
+
+            // Quick settle — settling a tab is the most frequent action on this screen,
+            // so it lives on the collapsed card face instead of hiding behind expand.
+            if (isUnpaid && !expanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(
+                        onClick = onMarkPaid,
+                        colors = ButtonDefaults.buttonColors(containerColor = ColorPaid.copy(alpha = 0.12f), contentColor = ColorPaid),
+                        shape = ShapeXS,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Mark as Paid", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
 
             // Expandable Breakdown section
@@ -816,7 +847,7 @@ fun TransactionCardItem(
                             }
 
                             Text(
-                                text = currencyFormatter.format(item.price * item.quantity).replace("PHP", "₱"),
+                                text = formatPeso(currencyFormatter, item.price * item.quantity),
                                 style = MaterialTheme.typography.bodyMedium.copy(color = TextDark, fontWeight = FontWeight.Bold)
                             )
                         }
@@ -848,20 +879,22 @@ fun TransactionCardItem(
                                 onClick = { showVoidConfirm = true },
                                 colors = ButtonDefaults.textButtonColors(contentColor = TextMuted)
                             ) {
-                                Icon(Icons.Default.Undo, contentDescription = "Void", modifier = Modifier.size(16.dp))
+                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Void", modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Void", fontSize = 12.sp)
                             }
                         }
 
-                        // Delete
-                        TextButton(
-                            onClick = { showDeleteConfirm = true },
-                            colors = ButtonDefaults.textButtonColors(contentColor = ColorUnpaid)
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Delete", fontSize = 12.sp)
+                        // Delete — admin only, irreversible data loss
+                        if (isAdmin) {
+                            TextButton(
+                                onClick = { showDeleteConfirm = true },
+                                colors = ButtonDefaults.textButtonColors(contentColor = ColorUnpaid)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Delete", fontSize = 12.sp)
+                            }
                         }
                     }
                 }
@@ -875,10 +908,10 @@ fun TransactionCardItem(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    imageVector = Icons.Default.ExpandMore,
                     contentDescription = "Expand",
                     tint = TextMuted,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(16.dp).rotate(chevronRotation)
                 )
             }
         }

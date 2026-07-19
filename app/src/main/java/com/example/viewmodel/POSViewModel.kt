@@ -16,7 +16,10 @@ data class CartItem(
     val quantity: Double
 )
 
-class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel() {
+class POSViewModel(
+    private val repository: FirestorePOSRepository,
+    private val sessionManager: SessionManager
+) : ViewModel() {
 
     // ── User-facing messages (errors + confirmations) surfaced to the UI as a snackbar/toast ──
     private val _userMessages = MutableSharedFlow<String>(extraBufferCapacity = 16)
@@ -35,6 +38,12 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
 
     private val _isSavingProduct = MutableStateFlow(false)
     val isSavingProduct: StateFlow<Boolean> = _isSavingProduct.asStateFlow()
+
+    private val _isSavingCashOut = MutableStateFlow(false)
+    val isSavingCashOut: StateFlow<Boolean> = _isSavingCashOut.asStateFlow()
+
+    private val _isSavingBorrow = MutableStateFlow(false)
+    val isSavingBorrow: StateFlow<Boolean> = _isSavingBorrow.asStateFlow()
 
     // UI State Flows from Repository
     val products = repository.products.stateIn(
@@ -70,6 +79,81 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
         initialValue = emptyList()
     )
 
+    val cashOutEntries = repository.cashOutEntries.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val borrowEntries = repository.borrowEntries.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    // ── Auth / Session ──
+    // Nullable with a null initial value (rather than seeding with AuthSettings() defaults) so
+    // the login screen can tell "still loading from Firestore" apart from "loaded, use these
+    // PINs" — otherwise a login attempt during the brief window before the first snapshot
+    // arrives would be checked against hardcoded defaults instead of the real synced PINs.
+    val authSettings: StateFlow<AuthSettings?> = repository.authSettings.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = null
+    )
+
+    val currentRole: StateFlow<Role?> = sessionManager.sessionFlow.map { it.first }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = null
+    )
+
+    val currentCashierName: StateFlow<String?> = sessionManager.sessionFlow.map { it.second }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = null
+    )
+
+    fun login(role: Role, pin: String, cashierName: String?, onResult: (Boolean) -> Unit) {
+        val settings = authSettings.value
+        if (settings == null) {
+            report("Still loading — try again in a moment.")
+            onResult(false)
+            return
+        }
+        val expectedPin = if (role == Role.ADMIN) settings.adminPin else settings.cashierPin
+        if (pin != expectedPin) {
+            onResult(false)
+            return
+        }
+        viewModelScope.launch {
+            sessionManager.saveSession(role, if (role == Role.CASHIER) cashierName else null)
+            navigateTo("HOME")
+            onResult(true)
+        }
+    }
+
+    fun logout() {
+        viewModelScope.launch {
+            sessionManager.clearSession()
+            // Clear transient UI state so it doesn't leak into whoever logs in next on this device.
+            _cartItems.value = emptyList()
+            _editingProduct.value = null
+            clearHistoryFilters()
+            _cashLogDateFilter.value = null
+        }
+    }
+
+    fun updatePins(adminPin: String, cashierPin: String) {
+        viewModelScope.launch {
+            try {
+                repository.updatePins(adminPin, cashierPin)
+            } catch (e: Exception) {
+                report("Failed to update PINs. ${e.message ?: ""}".trim())
+            }
+        }
+    }
+
     // Active Shopping Cart State
     private val _cartItems = MutableStateFlow<List<CartItem>>(emptyList())
     val cartItems: StateFlow<List<CartItem>> = _cartItems.asStateFlow()
@@ -98,6 +182,12 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
 
     private val _historyCustomerFilter = MutableStateFlow<String?>(null) // Customer name or null
     val historyCustomerFilter: StateFlow<String?> = _historyCustomerFilter.asStateFlow()
+
+    // Filter state for the Cash Log
+    private val _cashLogDateFilter = MutableStateFlow<String?>(null) // Format: "yyyy-MM-dd" or null
+    val cashLogDateFilter: StateFlow<String?> = _cashLogDateFilter.asStateFlow()
+
+    fun setCashLogDateFilter(date: String?) { _cashLogDateFilter.value = date }
 
     // Product form state (for adding/editing products)
     private val _editingProduct = MutableStateFlow<Product?>(null)
@@ -348,6 +438,102 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
         }
     }
 
+    // ── Cash-Out Log ──
+    fun addCashOutEntry(cashierName: String, amount: Double, note: String?, onSuccess: () -> Unit) {
+        if (_isSavingCashOut.value) return // guard: prevent double-tap
+        _isSavingCashOut.value = true
+        viewModelScope.launch {
+            try {
+                repository.addCashOutEntry(
+                    CashOutEntry(cashierName = cashierName, amount = amount, note = note)
+                )
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to log cash out. ${e.message ?: ""}".trim())
+            } finally {
+                _isSavingCashOut.value = false
+            }
+        }
+    }
+
+    fun updateCashOutEntry(entry: CashOutEntry, newAmount: Double, newNote: String?, onSuccess: () -> Unit) {
+        if (_isSavingCashOut.value) return
+        _isSavingCashOut.value = true
+        viewModelScope.launch {
+            try {
+                repository.updateCashOutEntry(entry.copy(amount = newAmount, note = newNote))
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to update cash-out entry. ${e.message ?: ""}".trim())
+            } finally {
+                _isSavingCashOut.value = false
+            }
+        }
+    }
+
+    fun deleteCashOutEntry(entry: CashOutEntry) {
+        viewModelScope.launch {
+            try {
+                repository.deleteCashOutEntry(entry)
+            } catch (e: Exception) {
+                report("Failed to delete cash-out entry. ${e.message ?: ""}".trim())
+            }
+        }
+    }
+
+    // ── Family Borrowing Log ──
+    fun addBorrowEntry(borrowerName: String, amount: Double, note: String?, onSuccess: () -> Unit) {
+        if (_isSavingBorrow.value) return // guard: prevent double-tap
+        _isSavingBorrow.value = true
+        viewModelScope.launch {
+            try {
+                repository.addBorrowEntry(
+                    BorrowEntry(borrowerName = borrowerName, amount = amount, note = note)
+                )
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to log borrow. ${e.message ?: ""}".trim())
+            } finally {
+                _isSavingBorrow.value = false
+            }
+        }
+    }
+
+    fun updateBorrowEntry(entry: BorrowEntry, newAmount: Double, newNote: String?, onSuccess: () -> Unit) {
+        if (_isSavingBorrow.value) return
+        _isSavingBorrow.value = true
+        viewModelScope.launch {
+            try {
+                repository.updateBorrowEntry(entry.copy(amount = newAmount, note = newNote))
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to update borrow entry. ${e.message ?: ""}".trim())
+            } finally {
+                _isSavingBorrow.value = false
+            }
+        }
+    }
+
+    fun markBorrowReturned(entry: BorrowEntry) {
+        viewModelScope.launch {
+            try {
+                repository.markBorrowReturned(entry.id)
+            } catch (e: Exception) {
+                report("Failed to mark borrow as returned. ${e.message ?: ""}".trim())
+            }
+        }
+    }
+
+    fun deleteBorrowEntry(entry: BorrowEntry) {
+        viewModelScope.launch {
+            try {
+                repository.deleteBorrowEntry(entry)
+            } catch (e: Exception) {
+                report("Failed to delete borrow entry. ${e.message ?: ""}".trim())
+            }
+        }
+    }
+
     // Delete transaction (no stock restore — used for admin cleanup of voided records)
 
     // ── Settings: Clear all Firestore data ──
@@ -427,6 +613,34 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = DashboardStats()
+    )
+
+    // Today's total employee expenses (sum of cash-out entries logged today).
+    val todayExpenseTotal = cashOutEntries.map { entries ->
+        val sdf = shopDateFormat("yyyy-MM-dd")
+        val todayStr = sdf.format(Date())
+        entries.filter { sdf.format(Date(it.timestamp)) == todayStr }.sumOf { it.amount }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = 0.0
+    )
+
+    // Outstanding-borrow summary — same shape as the Unpaid-transaction summary on
+    // TransactionsScreen (total, count, oldest age).
+    val borrowStats = borrowEntries.map { entries ->
+        val outstanding = entries.filter { it.returnedTimestamp == null }
+        BorrowStats(
+            totalOutstanding = outstanding.sumOf { it.amount },
+            outstandingCount = outstanding.size,
+            oldestDays = outstanding.maxOfOrNull {
+                ((System.currentTimeMillis() - it.timestamp) / (1000 * 60 * 60 * 24)).toInt()
+            } ?: 0
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = BorrowStats()
     )
 
     // Chart period filter: "7D", "1M", "1Y"
@@ -518,6 +732,16 @@ class POSViewModel(private val repository: FirestorePOSRepository) : ViewModel()
         initialValue = emptyList()
     )
 
+    // Filtered cash-out log
+    val filteredCashOutEntries = combine(cashOutEntries, _cashLogDateFilter) { entries, date ->
+        val sdf = shopDateFormat("yyyy-MM-dd")
+        entries.filter { date == null || sdf.format(Date(it.timestamp)) == date }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
     // Unique customer list for unpaid tracking
     val unpaidCustomers = transactions.map { txList ->
         txList.filter { it.status == "UNPAID" && !it.customerName.isNullOrBlank() }
@@ -545,11 +769,20 @@ data class ChartDataPoint(
     val dateString: String
 )
 
-class POSViewModelFactory(private val repository: FirestorePOSRepository) : ViewModelProvider.Factory {
+data class BorrowStats(
+    val totalOutstanding: Double = 0.0,
+    val outstandingCount: Int = 0,
+    val oldestDays: Int = 0
+)
+
+class POSViewModelFactory(
+    private val repository: FirestorePOSRepository,
+    private val sessionManager: SessionManager
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(POSViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return POSViewModel(repository) as T
+            return POSViewModel(repository, sessionManager) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
