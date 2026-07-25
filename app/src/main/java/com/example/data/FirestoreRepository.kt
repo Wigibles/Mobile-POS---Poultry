@@ -1,19 +1,37 @@
 package com.example.data
 
+import android.content.Context
 import android.util.Log
-import com.google.firebase.firestore.FieldValue
+import com.example.data.local.AppDatabase
+import com.example.data.local.PendingBorrowEntity
+import com.example.data.local.PendingCashOutEntity
+import com.example.data.local.PendingTransactionEntity
+import com.example.data.local.PendingTransactionItemEntity
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.Query
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 private const val TAG = "FirestorePOSRepo"
 
@@ -22,15 +40,19 @@ private const val TAG = "FirestorePOSRepo"
  * All read operations return Flows that emit updates in real-time across devices.
  * Write operations persist to the cloud and propagate to all connected clients.
  *
+ * **Offline support:** When the device has no internet, transactions are saved to a local
+ * Room database and automatically pushed to Firestore when connectivity returns. Product
+ * reads are cached by Firestore's built-in offline persistence so the catalog is always
+ * available.
+ *
  * Reliability guarantees:
  *  - IDs are allocated atomically via a Firestore transaction (no duplicate/overwritten records).
  *  - Multi-document writes (checkout, void, product edits) are committed as atomic batches,
  *    so a sale never leaves a half-written transaction behind.
- *  - Stock changes use server-side [FieldValue.increment], so concurrent devices can't clobber
- *    each other's deductions.
  *  - Read and write failures are surfaced through [errors] instead of being silently swallowed.
  */
 class FirestorePOSRepository(
+    private val context: Context,
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) {
     // ── Error surface — collected by the ViewModel and shown to the user ──
@@ -40,6 +62,55 @@ class FirestorePOSRepository(
     private fun reportListenerError(what: String, error: Throwable) {
         Log.e(TAG, "$what listener failed", error)
         _errors.tryEmit("Couldn't sync $what: ${error.message ?: "unknown error"}")
+    }
+
+    // ── Offline-support infrastructure ──
+    private val localDb = AppDatabase.getInstance(context)
+    private val pendingDao = localDb.pendingTransactionDao()
+    val networkMonitor = NetworkMonitor.getInstance(context)
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Google Sheets sync manager — queue & flush transaction rows to Sheets. */
+    val sheetSyncManager = SheetSyncManager(pendingDao, networkMonitor)
+
+    /** How many unsynced transactions are waiting to be pushed. */
+    private val _pendingSyncCount = MutableStateFlow(0)
+    val pendingSyncCount: StateFlow<Int> = _pendingSyncCount.asStateFlow()
+
+    /** Whether a sync of pending offline transactions is currently in progress. */
+    private val _isOfflineSyncing = MutableStateFlow(false)
+    val isOfflineSyncing: StateFlow<Boolean> = _isOfflineSyncing.asStateFlow()
+
+    init {
+        // Enable Firestore's built-in offline persistence so product catalog reads are
+        // cached locally and simple writes (categories, auth, cash-outs, borrows) are
+        // queued automatically when offline.
+        val settings = FirebaseFirestoreSettings.Builder()
+            .setPersistenceEnabled(true)
+            .build()
+        db.firestoreSettings = settings
+
+        // Keep the pending-count flow up to date for the UI (excludes sheet entries).
+        syncScope.launch {
+            pendingDao.userPendingCount().collect { _pendingSyncCount.value = it }
+        }
+
+        // Auto-sync whenever the device comes back online.
+        syncScope.launch {
+            networkMonitor.onReconnected.collect { connected ->
+                if (connected) {
+                    syncPendingTransactions()
+                    sheetSyncManager.syncPendingSheetEntries()
+                }
+            }
+        }
+
+        // Also attempt a sync at startup — catches any pending transactions that
+        // accumulated before the app was restarted.
+        syncScope.launch {
+            syncPendingTransactions()
+            sheetSyncManager.syncPendingSheetEntries()
+        }
     }
 
     // ── Products ──
@@ -136,6 +207,18 @@ class FirestorePOSRepository(
     }
 
     suspend fun addCashOutEntry(entry: CashOutEntry): Int = withContext(Dispatchers.IO) {
+        if (!networkMonitor.isOnline.value) {
+            val localId = pendingDao.insertCashOut(
+                PendingCashOutEntity(
+                    cashierName = entry.cashierName,
+                    amount = entry.amount.roundToCentavos(),
+                    note = entry.note,
+                    createdAt = entry.timestamp
+                )
+            )
+            Log.i(TAG, "Queued cash-out locally (localId=$localId) — will sync when online")
+            return@withContext (-localId).toInt()
+        }
         val id = nextId(CASH_OUTS)
         db.collection(CASH_OUTS).document("$id").set(entry.copy(id = id).toMap()).await()
         id
@@ -163,6 +246,18 @@ class FirestorePOSRepository(
     }
 
     suspend fun addBorrowEntry(entry: BorrowEntry): Int = withContext(Dispatchers.IO) {
+        if (!networkMonitor.isOnline.value) {
+            val localId = pendingDao.insertBorrow(
+                PendingBorrowEntity(
+                    borrowerName = entry.borrowerName,
+                    amount = entry.amount.roundToCentavos(),
+                    note = entry.note,
+                    createdAt = entry.timestamp
+                )
+            )
+            Log.i(TAG, "Queued borrow entry locally (localId=$localId) — will sync when online")
+            return@withContext (-localId).toInt()
+        }
         val id = nextId(BORROWS)
         db.collection(BORROWS).document("$id").set(entry.copy(id = id).toMap()).await()
         id
@@ -282,112 +377,311 @@ class FirestorePOSRepository(
     }
 
     // ── Process Transaction ──
-    // Records the sale and deducts stock as ONE atomic batch. Stock is decremented with
-    // FieldValue.increment (server-side, concurrency-safe). Deltas are aggregated per product
-    // so a sale containing two variations of the same product commits a single stock update.
+    // Records the sale. When online this is a single atomic Firestore batch with
+    // server-assigned IDs. When offline the transaction is saved to the local Room
+    // database and will be pushed automatically when connectivity returns.
+    // After writing to Firestore, the transaction is also queued for Google Sheets sync.
     suspend fun processTransaction(
         transaction: TransactionRecord,
         items: List<TransactionItem>
     ): Int = withContext(Dispatchers.IO) {
-        val txId = nextId(TRANSACTIONS)
-        val itemIds = reserveIds(TRANSACTION_ITEMS, items.size)
+        val online = networkMonitor.isOnline.value
 
-        val roundedTx = transaction.copy(
-            id = txId,
-            subtotal = transaction.subtotal.roundToCentavos(),
-            tax = transaction.tax.roundToCentavos(),
-            discount = transaction.discount.roundToCentavos(),
-            totalAmount = transaction.totalAmount.roundToCentavos()
-        )
-
-        val stockDeltas = items.groupBy { it.productId }
-            .mapValues { (_, lines) -> lines.sumOf { it.quantity * it.multiplier }.roundToCentavos() }
-
-        val batch = db.batch()
-        batch.set(db.collection(TRANSACTIONS).document("$txId"), roundedTx.toMap())
-        items.forEachIndexed { i, item ->
-            val itemId = itemIds[i]
-            batch.set(
-                db.collection(TRANSACTION_ITEMS).document("$itemId"),
-                item.copy(id = itemId, transactionId = txId, price = item.price.roundToCentavos()).toMap()
-            )
+        // Compute daily order number: count today's transactions + 1
+        val dailyOrderNumber = if (online) {
+            countTodayTransactions() + 1
+        } else {
+            0 // can't query Firestore offline; sheet will show "—"
         }
-        stockDeltas.forEach { (productId, deducted) ->
-            batch.update(
-                db.collection(PRODUCTS).document("$productId"),
-                "stockLevel", FieldValue.increment(-deducted)
+
+        // Build sheet payload regardless of path — enqueued after success
+        val sheetPayload = buildSheetPayload(transaction, items, dailyOrderNumber)
+
+        if (!online) {
+            // ── OFFLINE PATH: save to local Room queue ──
+            val rounded = transaction.copy(
+                subtotal = transaction.subtotal.roundToCentavos(),
+                tax = transaction.tax.roundToCentavos(),
+                discount = transaction.discount.roundToCentavos(),
+                totalAmount = transaction.totalAmount.roundToCentavos()
             )
+            val txEntity = PendingTransactionEntity(
+                customerName = rounded.customerName,
+                status = rounded.status,
+                subtotal = rounded.subtotal,
+                tax = rounded.tax,
+                discount = rounded.discount,
+                totalAmount = rounded.totalAmount,
+                createdAt = rounded.timestamp
+            )
+            val itemEntities = items.map { item ->
+                PendingTransactionItemEntity(
+                    pendingTransactionLocalId = 0, // filled by enqueueTransaction
+                    productId = item.productId,
+                    productName = item.productName,
+                    variationName = item.variationName,
+                    price = item.price.roundToCentavos(),
+                    quantity = item.quantity,
+                    multiplier = item.multiplier
+                )
+            }
+            val localId = pendingDao.enqueueTransaction(txEntity, itemEntities)
+            Log.i(TAG, "Queued transaction locally (localId=$localId) — will sync when online")
+
+            // Queue sheet entry too (uses negative localId as transaction reference)
+            sheetPayload.put("transactionId", (-localId).toString())
+            sheetSyncManager.enqueueSheetEntry((-localId).toInt(), sheetPayload)
+
+            // Return a negative id as a signal that this is a local-only record for now.
+            (-localId).toInt()
+        } else {
+            // ── ONLINE PATH: existing atomic Firestore write ──
+            val txId = nextId(TRANSACTIONS)
+            val itemIds = reserveIds(TRANSACTION_ITEMS, items.size)
+
+            val roundedTx = transaction.copy(
+                id = txId,
+                subtotal = transaction.subtotal.roundToCentavos(),
+                tax = transaction.tax.roundToCentavos(),
+                discount = transaction.discount.roundToCentavos(),
+                totalAmount = transaction.totalAmount.roundToCentavos()
+            )
+
+            val batch = db.batch()
+            batch.set(db.collection(TRANSACTIONS).document("$txId"), roundedTx.toMap())
+            items.forEachIndexed { i, item ->
+                val itemId = itemIds[i]
+                batch.set(
+                    db.collection(TRANSACTION_ITEMS).document("$itemId"),
+                    item.copy(id = itemId, transactionId = txId, price = item.price.roundToCentavos()).toMap()
+                )
+            }
+
+            batch.commit().await()
+
+            // Send to Google Sheets (queued if offline / send fails)
+            sheetPayload.put("transactionId", txId.toString())
+            sheetSyncManager.enqueueSheetEntry(txId, sheetPayload)
+
+            txId
         }
-        batch.commit().await()
-        txId
+    }
+
+    // ── Sync Pending Transactions ──
+    // Pushes all unsynced local transactions to Firestore in FIFO order. Each transaction
+    // gets a fresh server-assigned ID and its stock is deducted atomically. On success the
+    // local copy is deleted; on failure it stays queued for the next retry.
+    suspend fun syncPendingTransactions(): Int = withContext(Dispatchers.IO) {
+        if (_isOfflineSyncing.value) return@withContext 0 // guard: only one sync at a time
+        _isOfflineSyncing.value = true
+        var synced = 0
+        try {
+            val unsynced = pendingDao.getUnsyncedTransactions()
+            if (unsynced.isEmpty()) {
+                Log.d(TAG, "No pending transactions to sync")
+                return@withContext 0
+            }
+            Log.i(TAG, "Starting sync of ${unsynced.size} pending transaction(s)")
+
+            for (tx in unsynced) {
+                try {
+                    val items = pendingDao.getItemsForTransaction(tx.localId)
+                    if (items.isEmpty()) {
+                        // Orphaned — clean up
+                        pendingDao.deleteById(tx.localId)
+                        continue
+                    }
+
+                    // Reserve server-side IDs
+                    val txId = nextId(TRANSACTIONS)
+                    val itemIds = reserveIds(TRANSACTION_ITEMS, items.size)
+
+                    val batch = db.batch()
+                    batch.set(
+                        db.collection(TRANSACTIONS).document("$txId"),
+                        mapOf(
+                            "id" to txId,
+                            "customerName" to tx.customerName,
+                            "timestamp" to tx.createdAt,
+                            "status" to tx.status,
+                            "subtotal" to tx.subtotal,
+                            "tax" to tx.tax,
+                            "discount" to tx.discount,
+                            "totalAmount" to tx.totalAmount,
+                            "settledTimestamp" to null
+                        )
+                    )
+                    items.forEachIndexed { i, item ->
+                        val itemId = itemIds[i]
+                        batch.set(
+                            db.collection(TRANSACTION_ITEMS).document("$itemId"),
+                            mapOf(
+                                "id" to itemId,
+                                "transactionId" to txId,
+                                "productId" to item.productId,
+                                "productName" to item.productName,
+                                "variationName" to item.variationName,
+                                "price" to item.price,
+                                "quantity" to item.quantity,
+                                "multiplier" to item.multiplier
+                            )
+                        )
+                    }
+
+                    batch.commit().await()
+                    pendingDao.deleteById(tx.localId)
+                    synced++
+                    Log.i(TAG, "Synced transaction localId=${tx.localId} → Firestore id=$txId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to sync transaction localId=${tx.localId}; will retry later", e)
+                    // Stop on first failure — remaining transactions stay queued for next attempt
+                    break
+                }
+            }
+
+            // ── Sync pending cash-outs ──
+            val unsyncedCashOuts = pendingDao.getUnsyncedCashOuts()
+            for (co in unsyncedCashOuts) {
+                try {
+                    val id = nextId(CASH_OUTS)
+                    db.collection(CASH_OUTS).document("$id").set(
+                        mapOf(
+                            "id" to id,
+                            "cashierName" to co.cashierName,
+                            "amount" to co.amount,
+                            "note" to co.note,
+                            "timestamp" to co.createdAt
+                        )
+                    ).await()
+                    pendingDao.deleteCashOutById(co.localId)
+                    synced++
+                    Log.i(TAG, "Synced cash-out localId=${co.localId} → Firestore id=$id")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to sync cash-out localId=${co.localId}; will retry later", e)
+                    break
+                }
+            }
+
+            // ── Sync pending borrows ──
+            val unsyncedBorrows = pendingDao.getUnsyncedBorrows()
+            for (br in unsyncedBorrows) {
+                try {
+                    val id = nextId(BORROWS)
+                    db.collection(BORROWS).document("$id").set(
+                        mapOf(
+                            "id" to id,
+                            "borrowerName" to br.borrowerName,
+                            "amount" to br.amount,
+                            "note" to br.note,
+                            "timestamp" to br.createdAt,
+                            "returnedTimestamp" to null
+                        )
+                    ).await()
+                    pendingDao.deleteBorrowById(br.localId)
+                    synced++
+                    Log.i(TAG, "Synced borrow localId=${br.localId} → Firestore id=$id")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to sync borrow localId=${br.localId}; will retry later", e)
+                    break
+                }
+            }
+        } finally {
+            _isOfflineSyncing.value = false
+        }
+        synced
     }
 
     // ── Mark Transaction as Paid ──
     suspend fun markTransactionAsPaid(transactionId: Int) = withContext(Dispatchers.IO) {
         db.collection(TRANSACTIONS).document("$transactionId")
             .update(mapOf("status" to "PAID", "settledTimestamp" to System.currentTimeMillis())).await()
+
+        // Also update Google Sheets: find the row by transaction ID and set Status → PAID
+        sheetSyncManager.enqueueStatusUpdate(transactionId, "PAID")
     }
 
-    // ── Void Transaction ── (restore stock + flip status, atomically)
+    // ── Resync All Transactions to Google Sheets ──
+    // Fetches every transaction from Firestore and sends them to the sheet.
+    // The Apps Script handles duplicates (skip) and inserts at the correct
+    // chronological position. Use this to recover deleted sheet rows.
+    suspend fun resyncAllToSheets(): Int = withContext(Dispatchers.IO) {
+        if (sheetSyncManager.sheetWebAppUrl.isBlank()) {
+            Log.w(TAG, "Sheet sync disabled — cannot resync")
+            return@withContext 0
+        }
+        try {
+            val allTxs = db.collection(TRANSACTIONS)
+                .orderBy("timestamp", Query.Direction.ASCENDING)
+                .get()
+                .await()
+                .documents
+                .mapNotNull { it.toTransaction() }
+
+            Log.i(TAG, "Resyncing ${allTxs.size} transactions to Google Sheets")
+
+            var sent = 0
+            for (tx in allTxs) {
+                // Fetch items for this transaction
+                val items = db.collection(TRANSACTION_ITEMS)
+                    .whereEqualTo("transactionId", tx.id)
+                    .get()
+                    .await()
+                    .documents
+                    .mapNotNull { it.toTransactionItem() }
+
+                // Count today's transactions up to this one for daily order number
+                val cal = Calendar.getInstance(TimeZone.getTimeZone(SHEET_TIMEZONE))
+                cal.set(Calendar.HOUR_OF_DAY, 0)
+                cal.set(Calendar.MINUTE, 0)
+                cal.set(Calendar.SECOND, 0)
+                cal.set(Calendar.MILLISECOND, 0)
+                val startOfDay = cal.timeInMillis
+                cal.add(Calendar.DAY_OF_MONTH, 1)
+                val endOfDay = cal.timeInMillis
+
+                val dailyNumber = allTxs.count {
+                    it.timestamp >= startOfDay && it.timestamp < endOfDay && it.timestamp <= tx.timestamp
+                }
+
+                val payload = buildSheetPayload(tx, items, dailyNumber)
+                payload.put("transactionId", tx.id.toString())
+                sheetSyncManager.enqueueSheetEntry(tx.id, payload)
+                sent++
+            }
+
+            // Flush all queued entries now
+            sheetSyncManager.syncPendingSheetEntries()
+
+            Log.i(TAG, "Resync complete: $sent transactions sent to Sheets")
+            sent
+        } catch (e: Exception) {
+            Log.e(TAG, "Resync to Sheets failed", e)
+            throw e
+        }
+    }
+
+    // ── Void Transaction ── (flip status to VOIDED)
     suspend fun voidTransaction(transaction: TransactionRecord) = withContext(Dispatchers.IO) {
-        val items = db.collection(TRANSACTION_ITEMS)
-            .whereEqualTo("transactionId", transaction.id).get().await()
-            .documents.mapNotNull { it.toTransactionItem() }
+        Log.d(TAG, "Voiding transaction id=${transaction.id}")
+        db.collection(TRANSACTIONS).document("${transaction.id}")
+            .update("status", "VOIDED").await()
+        Log.i(TAG, "Successfully voided transaction ${transaction.id}")
 
-        val batch = db.batch()
-        restoreStockInto(batch, items)
-        batch.update(db.collection(TRANSACTIONS).document("${transaction.id}"), "status", "VOIDED")
-        batch.commit().await()
+        // Also update Google Sheets: set Status → VOIDED
+        sheetSyncManager.enqueueStatusUpdate(transaction.id, "VOIDED")
     }
 
-    // ── Delete Transaction with Stock Restore ── (restore + delete items + delete tx, atomically)
+    // ── Delete Transaction ── (delete items + delete tx, atomically)
     suspend fun deleteTransactionWithStockRestore(transaction: TransactionRecord) =
         withContext(Dispatchers.IO) {
             val itemDocs = db.collection(TRANSACTION_ITEMS)
                 .whereEqualTo("transactionId", transaction.id).get().await()
-            val items = itemDocs.documents.mapNotNull { it.toTransactionItem() }
 
             val batch = db.batch()
-            // Already-voided transactions already had their stock returned — don't double-restore.
-            if (transaction.status != "VOIDED") {
-                restoreStockInto(batch, items)
-            }
             itemDocs.documents.forEach { batch.delete(it.reference) }
             batch.delete(db.collection(TRANSACTIONS).document("${transaction.id}"))
             batch.commit().await()
         }
-
-    // Aggregates per-product restore amounts and adds the increments to [batch].
-    private fun restoreStockInto(
-        batch: com.google.firebase.firestore.WriteBatch,
-        items: List<TransactionItem>
-    ) {
-        items.groupBy { it.productId }
-            .mapValues { (_, lines) -> lines.sumOf { it.quantity * it.multiplier }.roundToCentavos() }
-            .forEach { (productId, restored) ->
-                batch.update(
-                    db.collection(PRODUCTS).document("$productId"),
-                    "stockLevel", FieldValue.increment(restored)
-                )
-            }
-    }
-
-    // ── Stock Validation ──
-    suspend fun validateStockAvailability(
-        productId: Int,
-        variationId: Int,
-        requestedQuantity: Double
-    ): StockValidationResult = withContext(Dispatchers.IO) {
-        val doc = db.collection(PRODUCTS).document("$productId").get().await()
-        val product = doc.toProduct() ?: return@withContext StockValidationResult(false, 0.0, 0.0)
-        val varDoc = db.collection(VARIATIONS).document("$variationId").get().await()
-        val multiplier = varDoc.toVariation()?.multiplier ?: 1.0
-        StockValidationResult(
-            isAvailable = (requestedQuantity * multiplier) <= product.stockLevel,
-            availableStock = product.stockLevel,
-            baseUnitsNeeded = requestedQuantity * multiplier
-        )
-    }
 
     // ── Customer Suggestions ──
     suspend fun getUnpaidCustomerNames(): List<String> = withContext(Dispatchers.IO) {
@@ -403,6 +697,9 @@ class FirestorePOSRepository(
 
     // ── Clear All Data (Settings) ── (batched in chunks; Firestore caps a batch at 500 writes)
     suspend fun clearAllData(): Int = withContext(Dispatchers.IO) {
+        // First clear local pending queue so they don't sync back up
+        pendingDao.clearAllPending()
+
         var deleted = 0
         val collections = listOf(TRANSACTION_ITEMS, VARIATIONS, TRANSACTIONS, PRODUCTS, CATEGORIES, COUNTERS, CASH_OUTS, BORROWS)
         for (col in collections) {
@@ -431,6 +728,34 @@ class FirestorePOSRepository(
     // Atomic allocation via a Firestore transaction so two devices can never mint the same id.
     private suspend fun nextId(collection: String): Int = reserveIds(collection, 1).first()
 
+    /**
+     * Counts how many transactions already exist for today (shop timezone).
+     * Used to compute the daily order number (#N) for Google Sheets.
+     */
+    private suspend fun countTodayTransactions(): Int = withContext(Dispatchers.IO) {
+        try {
+            val cal = Calendar.getInstance(TimeZone.getTimeZone(SHEET_TIMEZONE))
+            cal.set(Calendar.HOUR_OF_DAY, 0)
+            cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0)
+            cal.set(Calendar.MILLISECOND, 0)
+            val startOfDay = cal.timeInMillis
+
+            cal.add(Calendar.DAY_OF_MONTH, 1)
+            val endOfDay = cal.timeInMillis
+
+            val result = db.collection(TRANSACTIONS)
+                .whereGreaterThanOrEqualTo("timestamp", startOfDay)
+                .whereLessThan("timestamp", endOfDay)
+                .get(com.google.firebase.firestore.Source.SERVER)
+                .await()
+            result.size()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to count today's transactions: ${e.message}")
+            0
+        }
+    }
+
     // Reserves a contiguous block of [count] ids in a single atomic transaction and returns them.
     private suspend fun reserveIds(collection: String, count: Int): List<Int> =
         withContext(Dispatchers.IO) {
@@ -458,6 +783,7 @@ class FirestorePOSRepository(
         private const val AUTH_DOC = "auth"
         private const val CASH_OUTS = "cash_outs"
         private const val BORROWS = "borrows"
+        private const val SHEET_TIMEZONE = "Asia/Manila"
 
         // Without a cap, these two listeners re-sync the entire sales history on every screen
         // load, forever — fine at low volume, but it only gets slower and pricier as the
@@ -472,6 +798,41 @@ class FirestorePOSRepository(
         private const val RECENT_TRANSACTION_ITEMS_LIMIT: Long = 10000
         private const val RECENT_CASH_OUTS_LIMIT: Long = 3000
         private const val RECENT_BORROWS_LIMIT: Long = 3000
+
+        // ── Google Sheets payload builder ──────────────────────────────────
+
+        private val sheetTimeFormatter = SimpleDateFormat("hh:mm a", Locale.getDefault()).apply {
+            timeZone = TimeZone.getTimeZone(SHEET_TIMEZONE)
+        }
+        private val sheetDateFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply {
+            timeZone = TimeZone.getTimeZone(SHEET_TIMEZONE)
+        }
+
+        /**
+         * Builds a JSON payload for the Google Apps Script web app that writes
+         * one row per transaction into the connected Google Sheet.
+         */
+        fun buildSheetPayload(
+            transaction: TransactionRecord,
+            items: List<TransactionItem>,
+            dailyOrderNumber: Int = 0
+        ): JSONObject {
+            val itemSummary = items.joinToString(", ") { item ->
+                "${item.quantity.toLong()}× ${item.productName} (${item.variationName})"
+            }
+            val totalQty = items.sumOf { it.quantity }
+
+            return JSONObject().apply {
+                put("date", sheetDateFormatter.format(Date(transaction.timestamp)))
+                put("time", sheetTimeFormatter.format(Date(transaction.timestamp)))
+                put("orderNumber", if (dailyOrderNumber > 0) "#$dailyOrderNumber" else "—")
+                put("customer", transaction.customerName ?: "")
+                put("status", transaction.status)
+                put("items", itemSummary)
+                put("quantity", totalQty.toLong())
+                put("total", transaction.totalAmount.roundToCentavos())
+            }
+        }
     }
 }
 
@@ -482,9 +843,7 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
         Product(
             id = getLong("id")?.toInt() ?: return null,
             name = getString("name") ?: "",
-            category = getString("category") ?: "",
-            stockLevel = getDouble("stockLevel") ?: 0.0,
-            lowStockThreshold = getDouble("lowStockThreshold") ?: 5.0
+            category = getString("category") ?: ""
         )
     } catch (e: Exception) {
         Log.w(TAG, "Skipping malformed product ${id}", e); null
@@ -492,8 +851,7 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
 }
 
 private fun Product.toMap(): Map<String, Any?> = mapOf(
-    "id" to id, "name" to name, "category" to category,
-    "stockLevel" to stockLevel, "lowStockThreshold" to lowStockThreshold
+    "id" to id, "name" to name, "category" to category
 )
 
 private fun com.google.firebase.firestore.DocumentSnapshot.toVariation(): ProductVariation? {

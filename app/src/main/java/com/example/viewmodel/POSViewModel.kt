@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
-import com.example.data.StockValidationResult
 import com.example.data.roundToCentavos
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -32,7 +31,46 @@ class POSViewModel(
         viewModelScope.launch { repository.errors.collect { report(it) } }
     }
 
+    // ── Offline / sync state exposed to the UI ──
+    val isOnline: StateFlow<Boolean> = repository.networkMonitor.isOnline
+    val pendingSyncCount: StateFlow<Int> = repository.pendingSyncCount
+    val isOfflineSyncing: StateFlow<Boolean> = repository.isOfflineSyncing
+
+    /** Manually trigger a sync of all pending offline records (sales, cash-outs, borrows). */
+    fun syncNow() {
+        viewModelScope.launch {
+            try {
+                val count = repository.syncPendingTransactions()
+                val sheetCount = repository.sheetSyncManager.syncPendingSheetEntries()
+                val total = count + sheetCount
+                if (total > 0) report("$total pending record(s) synced to cloud.")
+            } catch (e: Exception) {
+                report("Sync failed: ${e.message ?: ""}".trim())
+            }
+        }
+    }
+
+    /** Re-send ALL Firestore transactions to Google Sheets (recovery). */
+    fun resyncToSheets() {
+        if (_isResyncingSheets.value) return // guard: prevent double-tap
+        _isResyncingSheets.value = true
+        viewModelScope.launch {
+            try {
+                report("Resyncing all transactions to Google Sheets…")
+                val count = repository.resyncAllToSheets()
+                report("$count transaction(s) sent to Sheets.")
+            } catch (e: Exception) {
+                report("Sheets resync failed: ${e.message ?: ""}".trim())
+            } finally {
+                _isResyncingSheets.value = false
+            }
+        }
+    }
+
     // ── Processing guards — prevent duplicate submissions ──
+    private val _isResyncingSheets = MutableStateFlow(false)
+    val isResyncingSheets: StateFlow<Boolean> = _isResyncingSheets.asStateFlow()
+
     private val _isProcessingTransaction = MutableStateFlow(false)
     val isProcessingTransaction: StateFlow<Boolean> = _isProcessingTransaction.asStateFlow()
 
@@ -297,8 +335,6 @@ class POSViewModel(
         id: Int,
         name: String,
         category: String,
-        stockLevel: Double,
-        lowStockThreshold: Double,
         variationsList: List<ProductVariation>,
         onSuccess: () -> Unit
     ) {
@@ -309,9 +345,7 @@ class POSViewModel(
             val product = Product(
                 id = id,
                 name = name,
-                category = category,
-                stockLevel = stockLevel,
-                lowStockThreshold = lowStockThreshold
+                category = category
             )
             if (id == 0) {
                 repository.insertProduct(product, variationsList)
@@ -413,27 +447,6 @@ class POSViewModel(
                 _customerSuggestions.value = repository.getUnpaidCustomerNames()
             } catch (e: Exception) {
                 report("Couldn't load customer suggestions. ${e.message ?: ""}".trim())
-            }
-        }
-    }
-
-    // 6.2 — Validate stock before adding to cart
-    fun validateStockForCart(
-        product: Product,
-        variation: ProductVariation,
-        requestedQuantity: Double,
-        onResult: (StockValidationResult) -> Unit
-    ) {
-        viewModelScope.launch {
-            try {
-                val result = repository.validateStockAvailability(
-                    productId = product.id,
-                    variationId = variation.id,
-                    requestedQuantity = requestedQuantity
-                )
-                onResult(result)
-            } catch (e: Exception) {
-                report("Couldn't check stock. ${e.message ?: ""}".trim())
             }
         }
     }
@@ -697,15 +710,6 @@ class POSViewModel(
             }
         }
         items
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
-    // Low stock products
-    val lowStockProducts = products.map { prodList ->
-        prodList.filter { it.stockLevel <= it.lowStockThreshold }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),

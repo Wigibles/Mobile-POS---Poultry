@@ -1,5 +1,18 @@
 package com.example.ui.screens
 
+import android.content.Context
+import android.graphics.pdf.PdfDocument
+import android.print.PrintAttributes
+import android.print.PrintManager
+import android.os.Bundle
+import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
+import android.print.PageRange
+import android.print.PrintDocumentAdapter
+import android.print.PrintDocumentInfo
+import android.print.pdf.PrintedPdfDocument
+import java.io.FileOutputStream
+import java.io.IOException
 import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
@@ -58,6 +71,8 @@ fun POSScreen(
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val customerSuggestions by viewModel.customerSuggestions.collectAsState()
     val isProcessing by viewModel.isProcessingTransaction.collectAsState()
+    val isOnline by viewModel.isOnline.collectAsState()
+    val pendingSyncCount by viewModel.pendingSyncCount.collectAsState()
 
     // Cart bottom sheet
     var showCartSheet by remember { mutableStateOf(false) }
@@ -73,6 +88,13 @@ fun POSScreen(
     var customerNameInput by remember { mutableStateOf("") }
     var showCustomerDropdown by remember { mutableStateOf(false) }
 
+    // Transaction completed popup
+    var showConfirmedDialog by remember { mutableStateOf(false) }
+    var confirmedStatus by remember { mutableStateOf("PAID") }
+    var confirmedCustomer by remember { mutableStateOf("") }
+    var confirmedTotal by remember { mutableStateOf(0.0) }
+    var confirmedCartItems by remember { mutableStateOf<List<com.example.viewmodel.CartItem>>(emptyList()) }
+
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-PH"))
 
     val filteredProducts = remember(products, searchQuery, selectedCategory) {
@@ -83,30 +105,13 @@ fun POSScreen(
         }
     }
 
-    // Different packages of the same product consume different amounts of base stock
-    // (e.g. "per Sack" = ×50). A quantity is only ever safe to add if the BASE UNITS it
-    // needs — quantity × multiplier, plus whatever's already reserved by other lines of
-    // this same product sitting in the cart — fit within the product's current stock.
-    fun remainingBaseUnits(productId: Int, currentStock: Double, excludingVariationId: Int? = null): Double {
-        val reserved = cartItems
-            .filter { it.product.id == productId && it.variation.id != excludingVariationId }
-            .sumOf { it.quantity * it.variation.multiplier }
-        return (currentStock - reserved).coerceAtLeast(0.0)
-    }
-
     // Direct tap: single-variant → instant add; multi-variant → picker sheet
     fun onProductTapped(product: Product) {
         val productVars = variations.filter { it.productId == product.id }
         if (productVars.isEmpty()) return
-        if (productVars.size == 1 && product.stockLevel > 0) {
+        if (productVars.size == 1) {
             val variation = productVars.first()
-            val remaining = remainingBaseUnits(product.id, product.stockLevel)
-            if (remaining >= variation.multiplier) {
-                viewModel.addToCart(product, variation, 1.0)
-                Toast.makeText(context, "${product.name} added", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, "Not enough stock for ${variation.name} — needs ${fmtQty(variation.multiplier)}, ${fmtQty(remaining)} left", Toast.LENGTH_LONG).show()
-            }
+            viewModel.addToCart(product, variation, 1.0)
         } else {
             variantSheetProduct = product
         }
@@ -160,6 +165,42 @@ fun POSScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(Icons.Default.History, contentDescription = "History", tint = TextDark, modifier = Modifier.size(20.dp))
+                }
+            }
+
+            // Offline indicator — compact chip, only visible when offline
+            if (!isOnline) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Surface(
+                        color = ColorUnpaid.copy(alpha = 0.10f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.CloudOff,
+                                contentDescription = "Offline",
+                                tint = ColorUnpaid,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (pendingSyncCount > 0) "$pendingSyncCount record(s) pending sync"
+                                else "Offline — saved locally",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = ColorUnpaid,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
                 }
             }
 
@@ -311,18 +352,11 @@ fun POSScreen(
                 } else {
                     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(cartItems) { item ->
-                            // Use the live stock figure (not the possibly-stale snapshot
-                            // captured in item.product when it was first added) so the cap
-                            // stays correct if stock changed since.
-                            val liveStock = products.find { it.id == item.product.id }?.stockLevel ?: item.product.stockLevel
-                            val remaining = remainingBaseUnits(item.product.id, liveStock, item.variation.id)
-                            val canIncrease = (item.quantity + 1.0) * item.variation.multiplier <= remaining + 1e-9
                             CartItemRow(
                                 item = item,
-                                canIncrease = canIncrease,
+                                canIncrease = true,
                                 onQtyIncrease = {
-                                    if (canIncrease) viewModel.updateCartQuantity(item.product, item.variation, item.quantity + 1.0)
-                                    else Toast.makeText(context, "Not enough stock left for ${item.variation.name}", Toast.LENGTH_SHORT).show()
+                                    viewModel.updateCartQuantity(item.product, item.variation, item.quantity + 1.0)
                                 },
                                 onQtyDecrease = { viewModel.updateCartQuantity(item.product, item.variation, item.quantity - 1.0) },
                                 onRemove = { viewModel.removeFromCart(item.product, item.variation) }
@@ -391,13 +425,6 @@ fun POSScreen(
         var selectedVar by remember(product.id) { mutableStateOf(productVars.firstOrNull()) }
         var qty by remember(product.id) { mutableStateOf(1.0) }
 
-        // How many BASE units this package selection actually needs — not raw product
-        // stock. A "per Sack" pick (×50) against 5 units in stock must gate on 50, not 5.
-        val remainingForSelected = remainingBaseUnits(product.id, product.stockLevel, selectedVar?.id)
-        val selectedMultiplier = selectedVar?.multiplier ?: 1.0
-        val maxAdditionalQty = if (selectedMultiplier > 0) kotlin.math.floor(remainingForSelected / selectedMultiplier + 1e-9) else 0.0
-        val hasEnoughStock = selectedVar != null && qty * selectedMultiplier <= remainingForSelected + 1e-9
-
         ModalBottomSheet(
             onDismissRequest = { variantSheetProduct = null },
             sheetState = variantSheetState,
@@ -410,7 +437,6 @@ fun POSScreen(
                     IconButton(onClick = { variantSheetProduct = null }) { Icon(Icons.Default.Close, "Close") }
                 }
                 Text(product.name, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = BrandPrimary))
-                Text("Stock: ${fmtQty(product.stockLevel)} units", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
 
                 Spacer(Modifier.height(16.dp))
 
@@ -453,35 +479,21 @@ fun POSScreen(
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clip(ShapeSM).background(SurfaceContainer).padding(2.dp)) {
                         IconButton(onClick = { qty = (qty - 1.0).coerceAtLeast(1.0) }, enabled = qty > 1.0, modifier = Modifier.size(46.dp)) { Icon(Icons.Default.Remove, "Decrease quantity", tint = TextDark, modifier = Modifier.size(20.dp)) }
                         Text("${qty.toLong()}", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark), modifier = Modifier.padding(horizontal = 16.dp))
-                        IconButton(onClick = { qty += 1.0 }, enabled = qty < maxAdditionalQty, modifier = Modifier.size(46.dp)) { Icon(Icons.Default.Add, "Increase quantity", tint = TextDark, modifier = Modifier.size(20.dp)) }
+                        IconButton(onClick = { qty += 1.0 }, modifier = Modifier.size(46.dp)) { Icon(Icons.Default.Add, "Increase quantity", tint = TextDark, modifier = Modifier.size(20.dp)) }
                     }
-                }
-
-                if (selectedVar != null && !hasEnoughStock) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Only ${fmtQty(maxAdditionalQty)} \"${selectedVar!!.name}\" available — needs ${fmtQty(qty * selectedMultiplier)} units, ${fmtQty(remainingForSelected)} left",
-                        style = MaterialTheme.typography.bodySmall.copy(color = ColorUnpaid, fontWeight = FontWeight.SemiBold)
-                    )
                 }
 
                 Spacer(Modifier.height(20.dp))
 
                 Button(onClick = {
-                    if (!hasEnoughStock) return@Button
                     selectedVar?.let { viewModel.addToCart(product, it, qty) }
                     variantSheetProduct = null
-                    Toast.makeText(context, "Added to cart!", Toast.LENGTH_SHORT).show()
-                }, enabled = selectedVar != null && hasEnoughStock,
+                }, enabled = selectedVar != null,
                     colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
                     shape = ShapeSM, modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
                     Text(
-                        when {
-                            product.stockLevel <= 0 -> "OUT OF STOCK"
-                            selectedVar != null && !hasEnoughStock -> "Not Enough Stock"
-                            else -> "Add to Cart"
-                        },
+                        "Add to Cart",
                         color = Color.White, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -565,11 +577,180 @@ fun POSScreen(
                             }
                             viewModel.finalizeTransaction(confirmationStatus, customerNameInput) {
                                 showConfirmationDialog = false
-                                Toast.makeText(context, "Transaction processed!", Toast.LENGTH_SHORT).show()
+                                confirmedStatus = confirmationStatus
+                                confirmedCustomer = customerNameInput
+                                confirmedTotal = finalTotal
+                                confirmedCartItems = cartItems.toList()
+                                showConfirmedDialog = true
                             }
                         }, enabled = !isProcessing, colors = ButtonDefaults.buttonColors(containerColor = statusColor),
                             shape = ShapeSM, modifier = Modifier.weight(1.5f).height(48.dp).testTag("confirm_transaction_button")
                         ) { Text(if (isProcessing) "Saving…" else "Confirm", color = Color.White, fontWeight = FontWeight.Bold) }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════
+    // TRANSACTION CONFIRMED POPUP
+    // ═══════════════════════════════════════
+    if (showConfirmedDialog) {
+        val statusColor = if (confirmedStatus == "PAID") ColorPaid else ColorUnpaid
+        val statusLabel = if (confirmedStatus == "PAID") "Paid" else "Unpaid"
+
+        Dialog(onDismissRequest = { showConfirmedDialog = false }) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                shape = ShapeLG,
+                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Success checkmark
+                    Box(
+                        Modifier.size(72.dp).clip(CircleShape).background(statusColor.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = "Confirmed",
+                            tint = statusColor,
+                            modifier = Modifier.size(42.dp)
+                        )
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Text(
+                        "Transaction Confirmed",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Black,
+                            color = TextDark
+                        )
+                    )
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        "Status: $statusLabel",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = statusColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+
+                    if (confirmedCustomer.isNotBlank()) {
+                        Text(
+                            "Customer: $confirmedCustomer",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
+                        )
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    // Order summary card
+                    Box(
+                        Modifier.fillMaxWidth().clip(ShapeSM).background(SurfaceContainer).padding(14.dp)
+                    ) {
+                        Column {
+                            Text(
+                                "Order Summary",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextDark
+                                )
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            HorizontalDivider(color = BorderLight)
+                            Spacer(Modifier.height(8.dp))
+
+                            confirmedCartItems.forEach { item ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "${item.product.name} — ${item.variation.name}",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = TextDark),
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "× ${fmtQty(item.quantity)}",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = TextMuted,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+                            HorizontalDivider(color = BorderLight)
+                            Spacer(Modifier.height(8.dp))
+
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "Total",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Black,
+                                        color = TextDark
+                                    )
+                                )
+                                Text(
+                                    formatPeso(currencyFormatter, confirmedTotal),
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Black,
+                                        color = BrandPrimary
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Action buttons
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Print Receipt button (optional)
+                        OutlinedButton(
+                            onClick = {
+                                generateReceiptPdf(
+                                    context = context,
+                                    status = confirmedStatus,
+                                    customer = confirmedCustomer,
+                                    items = confirmedCartItems,
+                                    total = confirmedTotal,
+                                    currencyFormatter = currencyFormatter
+                                )
+                            },
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            shape = ShapeSM
+                        ) {
+                            Icon(Icons.Default.Print, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Receipt", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { showConfirmedDialog = false },
+                            modifier = Modifier.weight(1.5f).height(48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
+                            shape = ShapeSM
+                        ) {
+                            Text("Done", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
                     }
                 }
             }
@@ -602,32 +783,17 @@ fun POSProductCard(
     }
 
     val variantCount = variations.size
-    val isLowStock = product.stockLevel <= product.lowStockThreshold
-    val isOutOfStock = product.stockLevel <= 0
-    val stockLabel = when {
-        isOutOfStock -> "Out"
-        isLowStock -> "Low · ${fmtQty(product.stockLevel)}"
-        else -> fmtQty(product.stockLevel)
-    }
-    val stockColor = when {
-        isOutOfStock -> ColorUnpaid
-        isLowStock -> ColorLowStockText
-        else -> ColorPaid
-    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxHeight()
-            .shadow(elevation = if (isOutOfStock) 0.dp else 1.dp, shape = ShapeMD, clip = false)
+            .shadow(elevation = 1.dp, shape = ShapeMD, clip = false)
             .pressScale(onClick = onTap),
-        colors = CardDefaults.cardColors(containerColor = if (isOutOfStock) SurfaceLight.copy(alpha = 0.5f) else SurfaceLight),
+        colors = CardDefaults.cardColors(containerColor = SurfaceLight),
         shape = ShapeMD,
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            if (isLowStock && !isOutOfStock) ColorLowStock.copy(alpha = 0.4f) else BorderLight
-        )
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderLight)
     ) {
         Column {
             // Product image tile — flat, neutral tone (no per-category color variety) so
@@ -641,35 +807,26 @@ fun POSProductCard(
             ) {
                 Text(text = productEmoji(product.name), fontSize = 32.sp, modifier = Modifier.align(Alignment.Center))
 
-                if (isOutOfStock) {
-                    StatusPill(
-                        text = "SOLD OUT", color = ColorUnpaid, showDot = false, fontSize = 9.sp,
-                        modifier = Modifier.align(Alignment.TopStart).padding(6.dp)
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(6.dp)
-                            .size(26.dp)
-                            .clip(ShapeXS)
-                            .background(BrandPrimary)
-                            .pressScale(onClick = onTap),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "Add to cart", tint = Color.White, modifier = Modifier.size(15.dp))
-                    }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .size(26.dp)
+                        .clip(ShapeXS)
+                        .background(BrandPrimary)
+                        .pressScale(onClick = onTap),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add to cart", tint = Color.White, modifier = Modifier.size(15.dp))
                 }
             }
 
             Column(modifier = Modifier.padding(horizontal = 10.dp).padding(top = 8.dp, bottom = 8.dp)) {
-                // The title is the first thing a cashier scans for — heaviest weight and
-                // largest type on the card, ahead of price, so it reads at arm's length.
                 Text(
                     product.name,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontWeight = FontWeight.Black,
-                        color = if (isOutOfStock) TextMuted else TextDark,
+                        color = TextDark,
                         fontSize = 15.sp,
                         lineHeight = 18.sp
                     ),
@@ -693,10 +850,6 @@ fun POSProductCard(
                         )
                     }
                 }
-
-                Spacer(Modifier.height(6.dp))
-
-                StatusPill(text = stockLabel, color = stockColor, fontSize = 10.sp)
             }
         }
     }
@@ -793,4 +946,171 @@ fun CartItemRow(
             }
         }
     }
+}
+
+/**
+ * Generates a simple PDF receipt and opens the Android Print dialog so the user
+ * can save as PDF, print to a printer, or share. This is optional — tap "Receipt"
+ * in the transaction-confirmed popup to trigger it.
+ */
+private fun generateReceiptPdf(
+    context: Context,
+    status: String,
+    customer: String,
+    items: List<com.example.viewmodel.CartItem>,
+    total: Double,
+    currencyFormatter: NumberFormat
+) {
+    try {
+        val printManager = context.getSystemService(Context.PRINT_SERVICE) as PrintManager
+        val doc = PrintedPdfDocument(context, PrintAttributes.Builder()
+            .setMediaSize(PrintAttributes.MediaSize.ISO_A6)
+            .setMinMargins(PrintAttributes.Margins(36, 36, 36, 36))
+            .build())
+
+        val page = doc.startPage(0)
+        val canvas = page.canvas
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            textSize = 12f
+            color = android.graphics.Color.BLACK
+        }
+        val bold = android.graphics.Paint(paint).apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        var y = 40f
+        val lineH = 18f
+        val left = 36f
+        val right = page.canvas.width - 36f
+
+        // Header
+        bold.textSize = 18f
+        canvas.drawText("Alyn's Poultry", left, y, bold)
+        y += 24f
+        bold.textSize = 12f
+        canvas.drawText("SALES RECEIPT", left, y, bold)
+        y += lineH + 4f
+
+        // Divider
+        canvas.drawLine(left, y, right, y, paint)
+        y += 10f
+
+        // Date & status
+        val sdf = java.text.SimpleDateFormat("MMM dd, yyyy  h:mm a", java.util.Locale.getDefault())
+        paint.textSize = 10f
+        canvas.drawText("Date: ${sdf.format(java.util.Date())}", left, y, paint)
+        y += lineH
+        val statusLabel = if (status == "PAID") "PAID" else "UNPAID"
+        canvas.drawText("Status: $statusLabel", left, y, paint)
+        y += lineH
+        if (customer.isNotBlank()) {
+            canvas.drawText("Customer: $customer", left, y, paint)
+            y += lineH
+        }
+        y += 4f
+        canvas.drawLine(left, y, right, y, paint)
+        y += 10f
+
+        // Items header
+        bold.textSize = 10f
+        canvas.drawText("Item", left, y, bold)
+        canvas.drawText("Qty", right - 80f, y, bold)
+        canvas.drawText("Price", right - 40f, y, bold)
+        y += lineH + 2f
+        canvas.drawLine(left, y, right, y, paint)
+        y += 8f
+
+        // Items
+        paint.textSize = 10f
+        items.forEach { item ->
+            val name = "${item.product.name} - ${item.variation.name}"
+            val qty = if (item.quantity == item.quantity.toLong().toDouble())
+                "${item.quantity.toLong()}" else String.format("%.1f", item.quantity)
+            val price = formatPesoRaw(item.variation.price * item.quantity)
+
+            val maxNameWidth = right - left - 120f
+            val displayName = if (paint.measureText(name) > maxNameWidth) {
+                var truncated = name
+                while (paint.measureText("$truncated…") > maxNameWidth && truncated.length > 3) {
+                    truncated = truncated.dropLast(1)
+                }
+                "$truncated…"
+            } else name
+
+            canvas.drawText(displayName, left, y, paint)
+            canvas.drawText(qty, right - 80f, y, paint)
+            canvas.drawText(price, right - 40f, y, paint)
+            y += lineH
+        }
+
+        // Total
+        y += 4f
+        canvas.drawLine(left, y, right, y, paint)
+        y += 10f
+        bold.textSize = 14f
+        canvas.drawText("TOTAL:", left, y, bold)
+        bold.textSize = 14f
+        canvas.drawText(
+            formatPesoRaw(total),
+            right - bold.measureText(formatPesoRaw(total)),
+            y,
+            bold
+        )
+
+        y += 30f
+        paint.textSize = 9f
+        paint.color = android.graphics.Color.GRAY
+        canvas.drawText("Thank you for your purchase!", left, y, paint)
+
+        doc.finishPage(page)
+
+        val jobName = "Alyn's Poultry Receipt - ${sdf.format(java.util.Date())}"
+        printManager.print(jobName, object : PrintDocumentAdapter() {
+            override fun onLayout(
+                oldAttributes: PrintAttributes?,
+                newAttributes: PrintAttributes,
+                cancellationSignal: CancellationSignal?,
+                callback: LayoutResultCallback,
+                extras: Bundle?
+            ) {
+                if (cancellationSignal?.isCanceled == true) {
+                    callback.onLayoutCancelled()
+                    return
+                }
+                val info = PrintDocumentInfo.Builder(jobName)
+                    .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
+                    .setPageCount(1)
+                    .build()
+                callback.onLayoutFinished(info, true)
+            }
+
+            override fun onWrite(
+                pages: Array<out PageRange>?,
+                destination: ParcelFileDescriptor,
+                cancellationSignal: CancellationSignal?,
+                callback: WriteResultCallback
+            ) {
+                try {
+                    doc.writeTo(FileOutputStream(destination.fileDescriptor))
+                    callback.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
+                } catch (e: IOException) {
+                    callback.onWriteFailed(e.message)
+                } finally {
+                    doc.close()
+                }
+            }
+        }, null)
+
+    } catch (e: Exception) {
+        Toast.makeText(context, "Couldn't generate receipt: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Formats a Double as peso string without the currency symbol for PDF use. */
+private fun formatPesoRaw(amount: Double): String {
+    val formatter = NumberFormat.getNumberInstance(java.util.Locale.forLanguageTag("en-PH"))
+    formatter.minimumFractionDigits = 2
+    formatter.maximumFractionDigits = 2
+    return "\u20B1${formatter.format(amount)}"
 }

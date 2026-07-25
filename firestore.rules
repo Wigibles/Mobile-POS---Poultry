@@ -19,28 +19,23 @@ rules_version = '2';
 //
 //   2. The schema validation below, which rejects malformed writes so a bad
 //      client can't corrupt documents your app then fails to parse.
-//
-// RECOMMENDED HARDENING: add real sign-in. Uncomment `libs.firebase.auth`,
-// call FirebaseAuth.getInstance().signInAnonymously() (or a real login) at app
-// start, then replace every `isValid...()` guard below with
-// `request.auth != null && isValid...()`. That ties every read/write to an
-// authenticated session on top of App Check.
 // ─────────────────────────────────────────────────────────────────────────────
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isNum(v)  { return v is number; }
+    // Improved type checks to handle both integers and floating point numbers.
+    function isNum(v)  { return v is int || v is float || v is number; }
     function isStr(v)  { return v is string; }
 
     match /products/{id} {
       allow read: if true;
-      allow write: if request.resource.data.keys().hasAll(['id','name','category','stockLevel','lowStockThreshold'])
+      allow create: if request.resource.data.keys().hasAll(['id','name','category'])
                    && isNum(request.resource.data.id)
                    && isStr(request.resource.data.name)
-                   && isStr(request.resource.data.category)
-                   && isNum(request.resource.data.stockLevel)
-                   && isNum(request.resource.data.lowStockThreshold);
+                   && isStr(request.resource.data.category);
+      allow update: if (!('name' in request.resource.data) || isStr(request.resource.data.name))
+                   && (!('category' in request.resource.data) || isStr(request.resource.data.category));
       allow delete: if true;
     }
 
@@ -65,11 +60,13 @@ service cloud.firestore {
 
     match /transactions/{id} {
       allow read: if true;
-      allow write: if request.resource.data.keys().hasAll(['id','status','timestamp','subtotal','tax','discount','totalAmount'])
+      allow create: if request.resource.data.keys().hasAll(['id','status','timestamp','totalAmount'])
                    && isNum(request.resource.data.id)
                    && isStr(request.resource.data.status)
                    && isNum(request.resource.data.timestamp)
                    && isNum(request.resource.data.totalAmount);
+      // Allow updates to status (PAID/VOIDED). Timestamp check is kept for schema safety.
+      allow update: if isStr(request.resource.data.status) && isNum(request.resource.data.timestamp);
       allow delete: if true;
     }
 
@@ -111,10 +108,7 @@ service cloud.firestore {
       allow delete: if true;
     }
 
-    // Admin/Cashier login PINs — { adminPin: <string>, cashierPin: <string> }.
-    // Unlike every other collection here, delete is NOT allowed: deleting this doc would
-    // silently reset both PINs back to the app's hardcoded defaults, bypassing whatever
-    // Admin configured. Overwriting via write is still how PINs are changed.
+    // Admin/Cashier login PINs.
     match /settings/{id} {
       allow read: if true;
       allow write: if request.resource.data.keys().hasAll(['adminPin','cashierPin'])
@@ -122,7 +116,5 @@ service cloud.firestore {
                    && isStr(request.resource.data.cashierPin);
       allow delete: if false;
     }
-
-    // Anything not matched above is denied by default.
   }
 }

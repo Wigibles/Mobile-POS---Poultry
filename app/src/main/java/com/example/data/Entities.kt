@@ -3,9 +3,7 @@ package com.example.data
 data class Product(
     val id: Int = 0,
     val name: String,
-    val category: String,
-    val stockLevel: Double,
-    val lowStockThreshold: Double = 5.0
+    val category: String
 )
 
 data class ProductVariation(
@@ -41,8 +39,6 @@ data class TransactionItem(
     val variationName: String,
     val price: Double,
     val quantity: Double,
-    // Base-unit multiplier captured at sale time so stock restore on void/delete
-    // is always accurate even if the variation's multiplier is edited later.
     val multiplier: Double = 1.0
 )
 

@@ -55,7 +55,11 @@ class MainActivity : ComponentActivity() {
         )
 
         // 1. Initialize Firestore cloud repository (real-time sync across devices)
-        val repository = FirestorePOSRepository()
+        val repository = FirestorePOSRepository(applicationContext)
+
+        // Configure Google Sheets sync — paste your deployed Google Apps Script web app URL here.
+        // Leave blank to disable sheet sync. See sheets-sync.gs for deployment instructions.
+        repository.sheetSyncManager.sheetWebAppUrl = "https://script.google.com/macros/s/AKfycbziH2otpVqq9HoZW3UePz9ZjiHXP-IWUW9vzpr7_SQWTgYbyi_gfYlCoFOM3eDjS_9C/exec"
 
         // 2. Device-local login session (not synced — each device logs in independently)
         val sessionManager = SessionManager(applicationContext)

@@ -108,6 +108,30 @@ fun TransactionsScreen(
         }
     }
 
+    // Date header formatter — e.g. "July 25, 2026"
+    val headerDateFormat = remember { shopDateFormat("MMMM dd, yyyy") }
+
+    // Group transactions by date, assign daily order numbers, and flatten into display list
+    val groupedTransactionList = remember(displayedTxs, sortOrder) {
+        val grouped = displayedTxs.groupBy { dateOnlyFormat.format(Date(it.timestamp)) }
+        val result = mutableListOf<TransactionListItem>()
+        val sortedDates = when (sortOrder) {
+            "oldest" -> grouped.keys.sorted() // oldest dates first
+            else -> grouped.keys.sortedDescending() // newest dates first
+        }
+        for (date in sortedDates) {
+            val dayTxs = grouped[date] ?: continue
+            val headerDate = try { dateOnlyFormat.parse(date) } catch (_: Exception) { Date() }
+            result.add(TransactionListItem.DateHeader(date, headerDateFormat.format(headerDate)))
+            // Assign daily order numbers: oldest transaction of the day = #1
+            val sortedDayTxs = dayTxs.sortedBy { it.timestamp }
+            sortedDayTxs.forEachIndexed { index, tx ->
+                result.add(TransactionListItem.TransactionEntry(tx, index + 1))
+            }
+        }
+        result
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -353,8 +377,8 @@ fun TransactionsScreen(
 
         Spacer(Modifier.height(4.dp))
 
-        // 3. TRANSACTIONS LIST
-        if (displayedTxs.isEmpty()) {
+        // 3. TRANSACTIONS LIST — grouped by date with daily order numbers
+        if (groupedTransactionList.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -395,18 +419,27 @@ fun TransactionsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
             ) {
-                items(displayedTxs, key = { it.id }) { tx ->
-                    val txItems = allItems.filter { it.transactionId == tx.id }
-                    TransactionCardItem(
-                        transaction = tx,
-                        items = txItems,
-                        currencyFormatter = currencyFormatter,
-                        dateFormatter = sdf,
-                        isAdmin = isAdmin,
-                        onMarkPaid = { viewModel.markTransactionAsPaid(tx.id) },
-                        onVoid = { viewModel.voidTransaction(tx) },
-                        onDelete = { viewModel.deleteTransactionWithStockRestore(tx) }
-                    )
+                items(groupedTransactionList) { listItem ->
+                    when (listItem) {
+                        is TransactionListItem.DateHeader -> {
+                            DateHeaderRow(date = listItem.formattedDate)
+                        }
+                        is TransactionListItem.TransactionEntry -> {
+                            val tx = listItem.transaction
+                            val txItems = allItems.filter { it.transactionId == tx.id }
+                            TransactionCardItem(
+                                transaction = tx,
+                                items = txItems,
+                                dailyNumber = listItem.dailyNumber,
+                                currencyFormatter = currencyFormatter,
+                                dateFormatter = sdf,
+                                isAdmin = isAdmin,
+                                onMarkPaid = { viewModel.markTransactionAsPaid(tx.id) },
+                                onVoid = { viewModel.voidTransaction(tx) },
+                                onDelete = { viewModel.deleteTransactionWithStockRestore(tx) }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -572,12 +605,21 @@ fun TransactionsScreen(
 
                             Spacer(Modifier.height(8.dp))
 
-                            // Transaction list for this customer
+                            // Transaction list for this customer — compute daily order numbers
+                            val customerTxsWithDaily = remember(customerTxs) {
+                                val byDate = customerTxs.groupBy { dateOnlyFormat.format(Date(it.timestamp)) }
+                                val sorted = mutableListOf<Pair<TransactionRecord, Int>>()
+                                byDate.keys.sortedDescending().forEach { date ->
+                                    val dayTxs = (byDate[date] ?: emptyList()).sortedBy { it.timestamp }
+                                    dayTxs.forEachIndexed { index, tx -> sorted.add(tx to index + 1) }
+                                }
+                                sorted
+                            }
                             LazyColumn(
                                 modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                items(customerTxs) { tx ->
+                                items(customerTxsWithDaily) { (tx, dailyNum) ->
                                     val txItems = allItems.filter { it.transactionId == tx.id }
                                     Card(
                                         modifier = Modifier.fillMaxWidth().shadow(elevation = 1.dp, shape = ShapeSM, clip = false),
@@ -586,7 +628,7 @@ fun TransactionsScreen(
                                     ) {
                                         Column(modifier = Modifier.padding(12.dp)) {
                                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                                Text("Order #${tx.id}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                                                Text("Order #$dailyNum", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark))
                                                 Text(formatPeso(currencyFormatter, tx.totalAmount),
                                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Black, color = ColorUnpaid, fontSize = 13.sp))
                                             }
@@ -631,6 +673,7 @@ fun TransactionsScreen(
 fun TransactionCardItem(
     transaction: TransactionRecord,
     items: List<TransactionItem>,
+    dailyNumber: Int = 0,
     currencyFormatter: NumberFormat,
     dateFormatter: SimpleDateFormat,
     isAdmin: Boolean,
@@ -697,7 +740,7 @@ fun TransactionCardItem(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Order #${transaction.id}",
+                        text = if (dailyNumber > 0) "Order #$dailyNumber" else "Order #${transaction.id}",
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = if (isVoided) TextMuted else TextDark
@@ -923,7 +966,7 @@ fun TransactionCardItem(
             onDismissRequest = { showVoidConfirm = false },
             title = { Text("Void Transaction?") },
             text = {
-                Text("This will mark the transaction as VOIDED and restore all deducted stock. This action cannot be undone.")
+                Text("This will mark the transaction as VOIDED. This action cannot be undone.")
             },
             confirmButton = {
                 TextButton(
@@ -953,7 +996,7 @@ fun TransactionCardItem(
                 Text(if (isVoided) {
                     "This will permanently delete this voided transaction."
                 } else {
-                    "This will delete the transaction and restore all deducted stock. This action cannot be undone."
+                    "This will delete the transaction. This action cannot be undone."
                 })
             },
             confirmButton = {
@@ -973,5 +1016,42 @@ fun TransactionCardItem(
                 }
             }
         )
+    }
+}
+
+/** Sealed interface for items in the transaction history list — either a date header or a transaction entry. */
+private sealed interface TransactionListItem {
+    data class DateHeader(val dateKey: String, val formattedDate: String) : TransactionListItem
+    data class TransactionEntry(val transaction: TransactionRecord, val dailyNumber: Int) : TransactionListItem
+}
+
+/** A sticky-looking date header that separates transaction groups by day. */
+@Composable
+private fun DateHeaderRow(date: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        color = BrandPrimary.copy(alpha = 0.08f),
+        shape = ShapeSM
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.CalendarMonth,
+                contentDescription = null,
+                tint = BrandPrimary,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = date,
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = BrandPrimary,
+                    fontSize = 13.sp
+                )
+            )
+        }
     }
 }

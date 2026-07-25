@@ -59,17 +59,14 @@ fun InventoryScreen(
     // Delete confirmation
     var productToDelete by remember { mutableStateOf<Product?>(null) }
 
-    // Local list filters — search + category + a one-tap low-stock focus
+    // Local list filters — search + category
     var inventoryCategoryFilter by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
-    var lowStockOnly by remember { mutableStateOf(false) }
 
     // Form inputs state
     var editingProductId by remember { mutableStateOf(0) }
     var nameInput by remember { mutableStateOf("") }
     var categoryInput by remember { mutableStateOf("") }
-    var stockInput by remember { mutableStateOf("") }
-    var lowStockThresholdInput by remember { mutableStateOf("5") }
 
     // Nested pricing variations state. The first row is always the "base" package that
     // anchors price suggestions for every other row — see PackageDraft/pricing helpers below.
@@ -81,8 +78,6 @@ fun InventoryScreen(
         editingProductId = 0
         nameInput = ""
         categoryInput = categories.firstOrNull()?.name ?: "Feeds"
-        stockInput = ""
-        lowStockThresholdInput = "5"
         variationOptions.clear()
         variationOptions.add(PackageDraft(name = "per Kilo", price = "45", size = "1")) // base package
         showForm = true
@@ -92,8 +87,6 @@ fun InventoryScreen(
         editingProductId = product.id
         nameInput = product.name
         categoryInput = product.category
-        stockInput = if (product.stockLevel == product.stockLevel.toLong().toDouble()) product.stockLevel.toLong().toString() else product.stockLevel.toString()
-        lowStockThresholdInput = if (product.lowStockThreshold == product.lowStockThreshold.toLong().toDouble()) product.lowStockThreshold.toLong().toString() else product.lowStockThreshold.toString()
 
         variationOptions.clear()
         val prodVars = variations.filter { it.productId == product.id }
@@ -113,14 +106,11 @@ fun InventoryScreen(
         showForm = true
     }
 
-    val lowStockCount = products.count { it.stockLevel <= it.lowStockThreshold }
-
-    val filteredProducts = remember(products, inventoryCategoryFilter, searchQuery, lowStockOnly) {
+    val filteredProducts = remember(products, inventoryCategoryFilter, searchQuery) {
         products.filter { p ->
             val matchesCategory = inventoryCategoryFilter == null || p.category.equals(inventoryCategoryFilter, ignoreCase = true)
             val matchesSearch = searchQuery.isBlank() || p.name.contains(searchQuery, ignoreCase = true) || p.category.contains(searchQuery, ignoreCase = true)
-            val matchesLowStock = !lowStockOnly || p.stockLevel <= p.lowStockThreshold
-            matchesCategory && matchesSearch && matchesLowStock
+            matchesCategory && matchesSearch
         }
     }
 
@@ -133,15 +123,8 @@ fun InventoryScreen(
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold, color = TextDark)
                 )
                 Text(
-                    text = when {
-                        products.isEmpty() -> "No products yet"
-                        lowStockCount == 0 -> "${products.size} products · all stocked up ✓"
-                        else -> "${products.size} products · $lowStockCount low on stock"
-                    },
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = if (lowStockCount > 0) ColorLowStockText else TextMuted,
-                        fontWeight = if (lowStockCount > 0) FontWeight.SemiBold else FontWeight.Normal
-                    )
+                    text = if (products.isEmpty()) "No products yet" else "${products.size} products",
+                    style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
                 )
             }
 
@@ -163,31 +146,16 @@ fun InventoryScreen(
                 singleLine = true
             )
 
-            // ── FILTER CHIPS — low-stock focus first, then categories ──
+            // ── FILTER CHIPS — categories ──
             LazyRow(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp)
             ) {
-                if (lowStockCount > 0) {
-                    item {
-                        FilterChip(
-                            selected = lowStockOnly,
-                            onClick = { lowStockOnly = !lowStockOnly },
-                            label = { Text("Low stock · $lowStockCount", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) },
-                            leadingIcon = { Icon(Icons.Default.Warning, null, Modifier.size(16.dp), tint = if (lowStockOnly) Color.White else ColorLowStockText) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = ColorLowStockText, selectedLabelColor = Color.White,
-                                containerColor = ColorLowStock.copy(alpha = 0.15f), labelColor = ColorLowStockText
-                            ),
-                            border = null
-                        )
-                    }
-                }
                 item {
                     FilterChip(
-                        selected = inventoryCategoryFilter == null && !lowStockOnly,
-                        onClick = { inventoryCategoryFilter = null; lowStockOnly = false },
+                        selected = inventoryCategoryFilter == null,
+                        onClick = { inventoryCategoryFilter = null },
                         label = { Text("All", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White,
@@ -409,46 +377,6 @@ fun InventoryScreen(
                             colors = formFieldColors(),
                             modifier = Modifier.fillMaxWidth()
                         )
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        FormSectionLabel("STOCK")
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = stockInput,
-                                onValueChange = { stockInput = it },
-                                label = { Text("Current stock") },
-                                placeholder = { Text("e.g. 50", color = TextMuted.copy(alpha = 0.6f)) },
-                                supportingText = { Text("base units on hand", fontSize = 10.sp, color = TextMuted) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
-                                shape = ShapeSM,
-                                colors = formFieldColors(),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("form_product_stock")
-                            )
-                            OutlinedTextField(
-                                value = lowStockThresholdInput,
-                                onValueChange = { lowStockThresholdInput = it },
-                                label = { Text("Alert below") },
-                                placeholder = { Text("e.g. 5", color = TextMuted.copy(alpha = 0.6f)) },
-                                supportingText = { Text("low-stock warning", fontSize = 10.sp, color = TextMuted) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
-                                shape = ShapeSM,
-                                colors = formFieldColors(),
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(20.dp))
 
                         // Pricing & Package Options — size-first, price-suggested. The first
                         // card is the base package; every other package's price auto-fills
@@ -702,8 +630,6 @@ fun InventoryScreen(
                                 if (isSaving) return@Button
                                 val finalName = nameInput.trim()
                                 val finalCategory = categoryInput.trim()
-                                val finalStock = stockInput.toDoubleOrNull() ?: 0.0
-                                val finalLowStock = lowStockThresholdInput.toDoubleOrNull() ?: 5.0
 
                                 if (finalName.isBlank() || finalCategory.isBlank()) {
                                     Toast.makeText(context, "Name and Category are required!", Toast.LENGTH_SHORT).show()
@@ -736,8 +662,6 @@ fun InventoryScreen(
                                     id = editingProductId,
                                     name = finalName,
                                     category = finalCategory,
-                                    stockLevel = finalStock,
-                                    lowStockThreshold = finalLowStock,
                                     variationsList = validVariations
                                 ) {
                                     showForm = false
@@ -812,20 +736,6 @@ fun InventoryProductRow(
     currencyFormatter: NumberFormat,
     onClick: () -> Unit
 ) {
-    val isOutOfStock = product.stockLevel <= 0
-    val isLowStock = !isOutOfStock && product.stockLevel <= product.lowStockThreshold
-
-    val stockLabel = when {
-        isOutOfStock -> "Out"
-        isLowStock -> "Low · ${if (product.stockLevel == product.stockLevel.toLong().toDouble()) "${product.stockLevel.toLong()}" else String.format("%.1f", product.stockLevel)}"
-        else -> if (product.stockLevel == product.stockLevel.toLong().toDouble()) "${product.stockLevel.toLong()}" else String.format("%.1f", product.stockLevel)
-    }
-    val stockColor = when {
-        isOutOfStock -> ColorUnpaid
-        isLowStock -> ColorLowStockText
-        else -> ColorPaid
-    }
-
     // Build compact price/variant summary string. One full price + a count — never two
     // prices squeezed into one line, which ellipsized mid-number ("per Sack ₱1,…").
     val priceSummary = when {
@@ -848,7 +758,7 @@ fun InventoryProductRow(
         colors = CardDefaults.cardColors(containerColor = SurfaceLight),
         shape = ShapeMD,
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = if (isLowStock) androidx.compose.foundation.BorderStroke(1.dp, ColorLowStock.copy(alpha = 0.35f)) else null
+        border = null
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp),
@@ -884,18 +794,6 @@ fun InventoryProductRow(
             }
 
             Spacer(modifier = Modifier.width(8.dp))
-
-            // Stock status — color + word, readable at a glance
-            Column(horizontalAlignment = Alignment.End) {
-                StatusPill(text = stockLabel, color = stockColor)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = if (isOutOfStock) "of stock" else "in stock",
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 9.sp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(4.dp))
             Icon(Icons.Default.ChevronRight, contentDescription = "Edit", tint = TextMuted.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
         }
     }

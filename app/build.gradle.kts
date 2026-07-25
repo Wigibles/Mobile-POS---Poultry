@@ -91,6 +91,11 @@ dependencies {
   // Firestore — cloud database for multi-device sync
   implementation(libs.firebase.firestore)
 
+  // Room — local database for offline transaction queue
+  implementation(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
+  ksp(libs.androidx.room.compiler)
+
   // Firebase Auth with Google Sign-In requires all of the following to be uncommented together.
   // If you are using Firebase Auth with other providers (e.g. Email/Password), you may only need
   // firebase-auth.

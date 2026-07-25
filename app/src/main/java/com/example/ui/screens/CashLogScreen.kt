@@ -124,7 +124,7 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "Family Borrowing",
+                        "Cash Borrowing",
                         fontSize = 13.sp,
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Bold,
