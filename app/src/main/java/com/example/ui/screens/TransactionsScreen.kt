@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -25,10 +26,12 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.Role
+import com.example.data.TimeHorizon
 import com.example.data.TransactionItem
 import com.example.data.TransactionRecord
 import com.example.data.shopDateFormat
@@ -51,9 +54,13 @@ fun TransactionsScreen(
     val currentRole by viewModel.currentRole.collectAsState()
     val isAdmin = currentRole == Role.ADMIN
 
+    val startDateFilter by viewModel.historyStartDateFilter.collectAsState()
+    val endDateFilter by viewModel.historyEndDateFilter.collectAsState()
     val dateFilter by viewModel.historyDateFilter.collectAsState()
     val statusFilter by viewModel.historyStatusFilter.collectAsState()
     val customerFilter by viewModel.historyCustomerFilter.collectAsState()
+    val historyHorizon by viewModel.historyHorizon.collectAsState()
+    val rangeSummary by viewModel.historyRangeSummary.collectAsState()
 
     var activeViewTab by remember { mutableStateOf("ALL") } // ALL, UNPAID
 
@@ -66,53 +73,31 @@ fun TransactionsScreen(
     // own day-bucketing (dashboard, charts) regardless of this device's own clock/timezone.
     val dateOnlyFormat = remember { shopDateFormat("yyyy-MM-dd") }
 
-    // Dynamic dates list for date filtering
-    val availableDates = remember(allTxs) {
-        allTxs.map { dateOnlyFormat.format(Date(it.timestamp)) }.distinct().sortedDescending()
-    }
-
-    var showDatePicker by remember { mutableStateOf(false) }
-    val datePickerState = rememberDatePickerState(selectableDates = object : SelectableDates {
-        override fun isSelectableDate(utcTimeMillis: Long): Boolean {
-            return availableDates.contains(dateOnlyFormat.format(Date(utcTimeMillis)))
-        }
-        override fun isSelectableYear(year: Int): Boolean = true
-    })
+    var showDateRangePicker by remember { mutableStateOf(false) }
+    val dateRangePickerState = rememberDateRangePickerState()
 
     // Customer profile dialog
     var showCustomerProfile by remember { mutableStateOf(false) }
     var customerSearchQuery by remember { mutableStateOf("") }
     var selectedCustomerProfile by remember { mutableStateOf<String?>(null) }
 
-    // Filtered lists depending on ALL vs UNPAID main tab, with sort
-    val displayedTxs = remember(filteredTxs, activeViewTab, sortOrder) {
-        val base = if (activeViewTab == "UNPAID") {
-            filteredTxs.filter { it.status == "UNPAID" }
-        } else {
-            filteredTxs
-        }
-        when (sortOrder) {
-            "oldest" -> base.sortedBy { it.timestamp }
-            "highest" -> base.sortedByDescending { it.totalAmount }
-            "overdue" -> base.sortedByDescending { it.timestamp }.sortedBy { if (it.status == "UNPAID") 0 else 1 }
-            else -> base // newest first (default from DB)
-        }
-    }
+    var collapsedDates by remember { mutableStateOf(setOf<String>()) }
 
-    // Automatically synchronize the view model status filter when switching main tabs
-    LaunchedEffect(activeViewTab) {
-        if (activeViewTab == "UNPAID") {
-            viewModel.setHistoryFilters(dateFilter, "UNPAID", customerFilter)
-        } else {
-            viewModel.setHistoryFilters(dateFilter, null, customerFilter)
+    // Filtered lists with sort
+    val displayedTxs = remember(filteredTxs, sortOrder) {
+        when (sortOrder) {
+            "oldest" -> filteredTxs.sortedBy { it.timestamp }
+            "highest" -> filteredTxs.sortedByDescending { it.totalAmount }
+            "overdue" -> filteredTxs.sortedByDescending { it.timestamp }.sortedBy { if (it.status == "UNPAID") 0 else 1 }
+            else -> filteredTxs.sortedByDescending { it.timestamp } // newest first
         }
     }
 
     // Date header formatter — e.g. "July 25, 2026"
     val headerDateFormat = remember { shopDateFormat("MMMM dd, yyyy") }
 
-    // Group transactions by date, assign daily order numbers, and flatten into display list
-    val groupedTransactionList = remember(displayedTxs, sortOrder) {
+    // Group transactions by date, assign chronological daily order numbers, and sort descending (last log on top)
+    val groupedTransactionList = remember(displayedTxs, sortOrder, collapsedDates) {
         val grouped = displayedTxs.groupBy { dateOnlyFormat.format(Date(it.timestamp)) }
         val result = mutableListOf<TransactionListItem>()
         val sortedDates = when (sortOrder) {
@@ -122,11 +107,35 @@ fun TransactionsScreen(
         for (date in sortedDates) {
             val dayTxs = grouped[date] ?: continue
             val headerDate = try { dateOnlyFormat.parse(date) } catch (_: Exception) { Date() }
-            result.add(TransactionListItem.DateHeader(date, headerDateFormat.format(headerDate)))
-            // Assign daily order numbers: oldest transaction of the day = #1
-            val sortedDayTxs = dayTxs.sortedBy { it.timestamp }
-            sortedDayTxs.forEachIndexed { index, tx ->
-                result.add(TransactionListItem.TransactionEntry(tx, index + 1))
+            val isCollapsed = collapsedDates.contains(date)
+            val dayTotal = dayTxs.filter { it.status != "VOIDED" }.sumOf { it.totalAmount }
+
+            result.add(
+                TransactionListItem.DateHeader(
+                    dateKey = date,
+                    formattedDate = headerDateFormat.format(headerDate),
+                    orderCount = dayTxs.size,
+                    dayTotal = dayTotal,
+                    isCollapsed = isCollapsed
+                )
+            )
+
+            if (!isCollapsed) {
+                // Determine chronological sequence numbers (#1 = first order of day, #N = last order of day)
+                val chronologicalDayTxs = dayTxs.sortedBy { it.timestamp }
+                val txOrderMap = chronologicalDayTxs.mapIndexed { index, tx -> tx.id to (index + 1) }.toMap()
+
+                // Sort descending so the newest/last log is displayed at the top
+                val sortedDayTxs = when (sortOrder) {
+                    "oldest" -> dayTxs.sortedBy { it.timestamp }
+                    "highest" -> dayTxs.sortedByDescending { it.totalAmount }
+                    "overdue" -> dayTxs.sortedByDescending { it.timestamp }.sortedBy { if (it.status == "UNPAID") 0 else 1 }
+                    else -> dayTxs.sortedByDescending { it.timestamp } // newest/last log at top
+                }
+
+                sortedDayTxs.forEach { tx ->
+                    result.add(TransactionListItem.TransactionEntry(tx, txOrderMap[tx.id] ?: 1))
+                }
             }
         }
         result
@@ -144,108 +153,176 @@ fun TransactionsScreen(
                 fontWeight = FontWeight.Bold,
                 color = TextDark
             ),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
         )
 
-        // 1. ALL vs UNPAID Toggle Sub-Tabs
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .clip(ShapeXL)
-                .background(SurfaceContainer)
-                .padding(4.dp)
+        // ── Time Horizon Presets Row ──
+        LazyRow(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(ShapeLG)
-                    .background(if (activeViewTab == "ALL") SurfaceLight else Color.Transparent)
-                    .clickable { activeViewTab = "ALL" }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ReceiptLong,
-                        contentDescription = "All",
-                        tint = if (activeViewTab == "ALL") BrandPrimary else TextMuted,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "All Records",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = if (activeViewTab == "ALL") BrandPrimary else TextMuted
-                        )
+            listOf(
+                TimeHorizon.ALL to "All",
+                TimeHorizon.DAY to "Day",
+                TimeHorizon.WEEK to "Week",
+                TimeHorizon.THIRTY_DAYS to "30D",
+                TimeHorizon.MTD to "MTD"
+            ).forEach { (horizon, label) ->
+                item {
+                    val isSelected = historyHorizon == horizon && dateFilter == null
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { viewModel.setHistoryHorizon(horizon) },
+                        label = {
+                            Text(
+                                label,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = BrandPrimary,
+                            selectedLabelColor = Color.White,
+                            containerColor = SurfaceContainer,
+                            labelColor = TextDark
+                        ),
+                        border = null,
+                        modifier = Modifier.height(32.dp)
                     )
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(ShapeLG)
-                    .background(if (activeViewTab == "UNPAID") SurfaceLight else Color.Transparent)
-                    .clickable { activeViewTab = "UNPAID" }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.PendingActions,
-                        contentDescription = "Unpaid",
-                        tint = if (activeViewTab == "UNPAID") ColorUnpaid else TextMuted,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Unpaid Tabs",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = if (activeViewTab == "UNPAID") ColorUnpaid else TextMuted
-                        )
-                    )
-                }
+            // Custom Date Range Picker chip
+            item {
+                val isCustom = historyHorizon == TimeHorizon.CUSTOM && startDateFilter != null
+                FilterChip(
+                    selected = isCustom,
+                    onClick = { showDateRangePicker = true },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = if (isCustom) Color.White else TextMuted
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            val rangeChipLabel = if (isCustom && !startDateFilter.isNullOrBlank()) {
+                                val s = try { SimpleDateFormat("MMM d", Locale.getDefault()).format(dateOnlyFormat.parse(startDateFilter!!) ?: Date()) } catch (_: Exception) { startDateFilter }
+                                val e = if (!endDateFilter.isNullOrBlank() && endDateFilter != startDateFilter) {
+                                    try { SimpleDateFormat("MMM d", Locale.getDefault()).format(dateOnlyFormat.parse(endDateFilter!!) ?: Date()) } catch (_: Exception) { endDateFilter }
+                                } else null
+                                if (e != null) "$s – $e" else "$s"
+                            } else "Date Range"
+                            Text(
+                                rangeChipLabel,
+                                fontSize = 12.sp,
+                                fontWeight = if (isCustom) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = BrandPrimary,
+                        selectedLabelColor = Color.White,
+                        containerColor = SurfaceContainer,
+                        labelColor = TextDark
+                    ),
+                    border = null,
+                    modifier = Modifier.height(32.dp)
+                )
             }
         }
 
-        // ── Unpaid Summary Card (only on UNPAID tab) ──
-        if (activeViewTab == "UNPAID") {
-            val unpaidTxs = displayedTxs.filter { it.status == "UNPAID" }
-            if (unpaidTxs.isNotEmpty()) {
-                val totalReceivables = unpaidTxs.sumOf { it.totalAmount }
-                val oldestDays = unpaidTxs.maxOfOrNull {
-                    ((System.currentTimeMillis() - it.timestamp) / (1000 * 60 * 60 * 24)).toInt()
-                } ?: 0
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                    colors = CardDefaults.cardColors(containerColor = ColorUnpaid.copy(alpha = 0.08f)),
-                    shape = ShapeSM
+        // ── Range Sales Summary Card ──
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .shadow(elevation = 3.dp, shape = ShapeMD, clip = false),
+            colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+            shape = ShapeMD
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(formatPeso(currencyFormatter, totalReceivables), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = ColorUnpaid))
-                            Text("Total Receivables", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(4.dp, 16.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(BrandPrimary)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (rangeSummary.rangeLabel.isNotBlank()) rangeSummary.rangeLabel else "All Records",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextMuted
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        text = "${rangeSummary.count} order${if (rangeSummary.count != 1) "s" else ""}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
+                    )
+                }
+
+                Spacer(Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Column {
+                        Text(
+                            text = "Total Sales Amount",
+                            style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp)
+                        )
+                        Text(
+                            text = formatPeso(currencyFormatter, rangeSummary.totalSales),
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Black,
+                                color = BrandPrimary,
+                                fontSize = 22.sp
+                            )
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("Paid", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                            Text(
+                                formatPeso(currencyFormatter, rangeSummary.paidAmount),
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = ColorPaid
+                                )
+                            )
                         }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${unpaidTxs.size}", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = TextDark))
-                            Text("Unpaid Orders", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${oldestDays}d", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = if (oldestDays > 30) ColorUnpaid else TextDark))
-                            Text("Oldest", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                        if (rangeSummary.unpaidAmount > 0) {
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Unpaid", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                                Text(
+                                    formatPeso(currencyFormatter, rangeSummary.unpaidAmount),
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = ColorUnpaid
+                                    )
+                                )
+                            }
                         }
                     }
                 }
             }
         }
 
-        // ── Unified Toolbar (scrollable chips + fixed sort/clear) ──
+        // ── Secondary Filters & Sort Toolbar ──
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -255,22 +332,6 @@ fun TransactionsScreen(
                 modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Date picker
-                item {
-                    FilterChip(
-                        selected = dateFilter != null,
-                        onClick = { showDatePicker = true },
-                        label = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.CalendarMonth, null, Modifier.size(16.dp), tint = if (dateFilter != null) Color.White else TextMuted)
-                                Spacer(Modifier.width(3.dp))
-                                Text(if (dateFilter != null) SimpleDateFormat("MMM dd", Locale.getDefault()).format(dateOnlyFormat.parse(dateFilter)!!) else "Dates", fontSize = 12.sp)
-                            }
-                        },
-                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
-                        border = null, modifier = Modifier.height(32.dp)
-                    )
-                }
 
                 // Customer search button (opens profile dialog)
                 item {
@@ -289,37 +350,28 @@ fun TransactionsScreen(
                     )
                 }
 
-                // Status chips (ALL tab) or Customer chips (UNPAID tab)
-                if (activeViewTab == "ALL") {
-                    listOf(null to "All", "PAID" to "Paid", "UNPAID" to "Unpaid").forEach { (key, label) ->
-                        item {
-                            FilterChip(
-                                selected = statusFilter == key,
-                                onClick = { viewModel.setHistoryFilters(dateFilter, if (statusFilter == key) null else key, customerFilter) },
-                                label = { Text(label, fontSize = 12.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = if (key == "PAID") ColorPaid else if (key == "UNPAID") ColorUnpaid else BrandPrimary,
-                                    selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark
-                                ), border = null, modifier = Modifier.height(32.dp)
-                            )
-                        }
-                    }
-                } else if (unpaidCustomers.isNotEmpty()) {
+                // Status filter chips: All, Paid, Unpaid
+                listOf(null to "All", "PAID" to "Paid", "UNPAID" to "Unpaid").forEach { (key, label) ->
                     item {
                         FilterChip(
-                            selected = customerFilter == null,
-                            onClick = { viewModel.setHistoryFilters(dateFilter, statusFilter, null) },
-                            label = { Text("All", fontSize = 12.sp) },
-                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
-                            border = null, modifier = Modifier.height(32.dp)
+                            selected = statusFilter == key,
+                            onClick = { viewModel.setHistoryFilters(startDateFilter, endDateFilter, if (statusFilter == key) null else key, customerFilter) },
+                            label = { Text(label, fontSize = 12.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = if (key == "PAID") ColorPaid else if (key == "UNPAID") ColorUnpaid else BrandPrimary,
+                                selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark
+                            ), border = null, modifier = Modifier.height(32.dp)
                         )
                     }
-                    items(unpaidCustomers) { customer ->
+                }
+
+                if (customerFilter != null) {
+                    item {
                         FilterChip(
-                            selected = customerFilter == customer,
-                            onClick = { viewModel.setHistoryFilters(dateFilter, statusFilter, if (customerFilter == customer) null else customer) },
-                            label = { Text(customer, fontSize = 12.sp, maxLines = 1) },
-                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ColorUnpaid, selectedLabelColor = Color.White, containerColor = SurfaceContainer, labelColor = TextDark),
+                            selected = true,
+                            onClick = { viewModel.setHistoryFilters(startDateFilter, endDateFilter, statusFilter, null) },
+                            label = { Text("Customer: $customerFilter ✕", fontSize = 12.sp, maxLines = 1) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = BrandPrimary, selectedLabelColor = Color.White),
                             border = null, modifier = Modifier.height(32.dp)
                         )
                     }
@@ -422,7 +474,20 @@ fun TransactionsScreen(
                 items(groupedTransactionList) { listItem ->
                     when (listItem) {
                         is TransactionListItem.DateHeader -> {
-                            DateHeaderRow(date = listItem.formattedDate)
+                            DateHeaderRow(
+                                date = listItem.formattedDate,
+                                orderCount = listItem.orderCount,
+                                dayTotalSales = listItem.dayTotal,
+                                currencyFormatter = currencyFormatter,
+                                isCollapsed = listItem.isCollapsed,
+                                onToggleCollapse = {
+                                    collapsedDates = if (collapsedDates.contains(listItem.dateKey)) {
+                                        collapsedDates - listItem.dateKey
+                                    } else {
+                                        collapsedDates + listItem.dateKey
+                                    }
+                                }
+                            )
                         }
                         is TransactionListItem.TransactionEntry -> {
                             val tx = listItem.transaction
@@ -444,30 +509,39 @@ fun TransactionsScreen(
             }
         }
 
-        // ── Date Picker Dialog ──
-        if (showDatePicker) {
+        // ── Date Range Picker Dialog ──
+        if (showDateRangePicker) {
             DatePickerDialog(
-                onDismissRequest = { showDatePicker = false },
+                onDismissRequest = { showDateRangePicker = false },
                 confirmButton = {
-                    TextButton(onClick = {
-                        val selectedMillis = datePickerState.selectedDateMillis
-                        if (selectedMillis != null) {
-                            val dateStr = dateOnlyFormat.format(Date(selectedMillis))
-                            viewModel.setHistoryFilters(dateStr, statusFilter, customerFilter)
-                        } else {
-                            viewModel.setHistoryFilters(null, statusFilter, customerFilter)
-                        }
-                        showDatePicker = false
-                    }) { Text("OK") }
+                    TextButton(
+                        onClick = {
+                            val startMillis = dateRangePickerState.selectedStartDateMillis
+                            val endMillis = dateRangePickerState.selectedEndDateMillis ?: startMillis
+                            if (startMillis != null) {
+                                val startStr = dateOnlyFormat.format(Date(startMillis))
+                                val endStr = if (endMillis != null) dateOnlyFormat.format(Date(endMillis)) else startStr
+                                viewModel.setHistoryFilters(startStr, endStr, statusFilter, customerFilter, TimeHorizon.CUSTOM)
+                            } else {
+                                viewModel.setHistoryFilters(null, null, statusFilter, customerFilter, TimeHorizon.ALL)
+                            }
+                            showDateRangePicker = false
+                        },
+                        enabled = dateRangePickerState.selectedStartDateMillis != null
+                    ) { Text("OK") }
                 },
                 dismissButton = {
                     TextButton(onClick = {
-                        viewModel.setHistoryFilters(null, statusFilter, customerFilter)
-                        showDatePicker = false
+                        viewModel.setHistoryFilters(null, null, statusFilter, customerFilter, TimeHorizon.ALL)
+                        showDateRangePicker = false
                     }) { Text("Clear") }
                 }
             ) {
-                DatePicker(state = datePickerState, title = { Text("Select Date") })
+                DateRangePicker(
+                    state = dateRangePickerState,
+                    title = { Text("Select Date Range", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) },
+                    showModeToggle = false
+                )
             }
         }
 
@@ -1021,37 +1095,89 @@ fun TransactionCardItem(
 
 /** Sealed interface for items in the transaction history list — either a date header or a transaction entry. */
 private sealed interface TransactionListItem {
-    data class DateHeader(val dateKey: String, val formattedDate: String) : TransactionListItem
+    data class DateHeader(
+        val dateKey: String,
+        val formattedDate: String,
+        val orderCount: Int,
+        val dayTotal: Double,
+        val isCollapsed: Boolean
+    ) : TransactionListItem
     data class TransactionEntry(val transaction: TransactionRecord, val dailyNumber: Int) : TransactionListItem
 }
 
-/** A sticky-looking date header that separates transaction groups by day. */
+/** A collapsible date header that separates transaction groups by day, displaying order count and day total. */
 @Composable
-private fun DateHeaderRow(date: String) {
+private fun DateHeaderRow(
+    date: String,
+    orderCount: Int,
+    dayTotalSales: Double,
+    currencyFormatter: NumberFormat,
+    isCollapsed: Boolean,
+    onToggleCollapse: () -> Unit
+) {
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(ShapeSM)
+            .clickable { onToggleCollapse() },
         color = BrandPrimary.copy(alpha = 0.08f),
         shape = ShapeSM
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(
-                Icons.Default.CalendarMonth,
-                contentDescription = null,
-                tint = BrandPrimary,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = date,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = BrandPrimary,
-                    fontSize = 13.sp
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.CalendarMonth,
+                    contentDescription = null,
+                    tint = BrandPrimary,
+                    modifier = Modifier.size(16.dp)
                 )
-            )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = date,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = BrandPrimary,
+                        fontSize = 13.sp
+                    )
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    color = BrandPrimary.copy(alpha = 0.15f),
+                    shape = ShapeXL
+                ) {
+                    Text(
+                        text = "$orderCount order${if (orderCount > 1) "s" else ""}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = BrandPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 10.sp
+                        ),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = formatPeso(currencyFormatter, dayTotalSales),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = TextDark
+                    )
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = if (isCollapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                    contentDescription = if (isCollapsed) "Expand" else "Collapse",
+                    tint = TextMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }

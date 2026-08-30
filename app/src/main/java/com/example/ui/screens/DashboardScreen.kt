@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -56,9 +57,13 @@ import com.example.data.Role
 import com.example.ui.theme.*
 import com.example.viewmodel.ChartDataPoint
 import com.example.viewmodel.POSViewModel
+import com.example.data.TimeHorizon
+import com.example.data.shopDateFormat
 import java.text.NumberFormat
+import java.util.Date
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     viewModel: POSViewModel,
@@ -66,6 +71,10 @@ fun DashboardScreen(
     modifier: Modifier = Modifier
 ) {
     val stats by viewModel.dashboardStats.collectAsState()
+    val rangeStats by viewModel.dashboardRangeStats.collectAsState()
+    val dashboardHorizon by viewModel.dashboardHorizon.collectAsState()
+    val customDashboardDate by viewModel.customDashboardDate.collectAsState()
+    val allTxs by viewModel.transactions.collectAsState()
     val productList by viewModel.products.collectAsState()
     val todayExpenseTotal by viewModel.todayExpenseTotal.collectAsState()
     val borrowStats by viewModel.borrowStats.collectAsState()
@@ -75,6 +84,14 @@ fun DashboardScreen(
     val context = LocalContext.current
 
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-PH"))
+    val dateOnlyFormat = remember { shopDateFormat("yyyy-MM-dd") }
+
+    val availableDates = remember(allTxs) {
+        allTxs.map { dateOnlyFormat.format(Date(it.timestamp)) }.distinct().sortedDescending()
+    }
+
+    var showDashboardDateRangePicker by remember { mutableStateOf(false) }
+    val dashboardDateRangePickerState = rememberDateRangePickerState()
 
     var showSettings by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
@@ -146,10 +163,14 @@ fun DashboardScreen(
 
         StaggeredFadeSlide(visible = hasLaunched, delayMs = 80) {
             HeroSalesCard(
-                totalSales = stats.totalSalesToday,
-                paidToday = stats.paidToday,
-                unpaidToday = stats.unpaidToday,
-                formatter = currencyFormatter
+                rangeLabel = rangeStats.rangeLabel,
+                totalSales = rangeStats.totalSales,
+                paidAmount = rangeStats.paidAmount,
+                unpaidAmount = rangeStats.unpaidAmount,
+                formatter = currencyFormatter,
+                selectedHorizon = dashboardHorizon,
+                onHorizonChange = { viewModel.setDashboardHorizon(it) },
+                onPickDate = { showDashboardDateRangePicker = true }
             )
         }
 
@@ -163,7 +184,7 @@ fun DashboardScreen(
                         icon = Icons.AutoMirrored.Filled.ReceiptLong,
                         gradientStart = BrandPrimary,
                         gradientEnd = BrandSecondary,
-                        value = stats.salesCount.toDouble(),
+                        value = rangeStats.salesCount.toDouble(),
                         format = { it.toInt().toString() },
                         label = "Transactions"
                     )
@@ -172,9 +193,9 @@ fun DashboardScreen(
                         icon = Icons.Default.ShoppingCart,
                         gradientStart = Color(0xFFE8913A),
                         gradientEnd = Color(0xFFF4B35E),
-                        value = todayExpenseTotal,
+                        value = rangeStats.expenseTotal,
                         format = { formatPeso(currencyFormatter, it) },
-                        label = "Today's Expenses",
+                        label = "Period Expenses",
                         labelColor = Color(0xFFB8731F)
                     )
                 }
@@ -194,9 +215,9 @@ fun DashboardScreen(
                         icon = Icons.Default.AccountBalanceWallet,
                         gradientStart = ColorPaid,
                         gradientEnd = ColorPaid.copy(alpha = 0.7f),
-                        value = stats.totalSalesToday - todayExpenseTotal,
+                        value = rangeStats.netAmount,
                         format = { formatPeso(currencyFormatter, it) },
-                        label = "Net Today"
+                        label = "Net Income"
                     )
                 }
             }
@@ -301,6 +322,39 @@ fun DashboardScreen(
         }
 
         Spacer(Modifier.height(72.dp))
+    }
+
+    if (showDashboardDateRangePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDashboardDateRangePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val startMillis = dashboardDateRangePickerState.selectedStartDateMillis
+                        val endMillis = dashboardDateRangePickerState.selectedEndDateMillis ?: startMillis
+                        if (startMillis != null) {
+                            val startStr = dateOnlyFormat.format(Date(startMillis))
+                            val endStr = if (endMillis != null) dateOnlyFormat.format(Date(endMillis)) else startStr
+                            viewModel.setDashboardHorizon(TimeHorizon.CUSTOM, startStr, endStr)
+                        }
+                        showDashboardDateRangePicker = false
+                    },
+                    enabled = dashboardDateRangePickerState.selectedStartDateMillis != null
+                ) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.setDashboardHorizon(TimeHorizon.DAY, null, null)
+                    showDashboardDateRangePicker = false
+                }) { Text("Reset") }
+            }
+        ) {
+            DateRangePicker(
+                state = dashboardDateRangePickerState,
+                title = { Text("Select Date Range", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) },
+                showModeToggle = false
+            )
+        }
     }
 
     if (showSettings) {
@@ -447,10 +501,14 @@ private fun ModernHeader(onSettingsClick: () -> Unit) {
 
 @Composable
 private fun HeroSalesCard(
+    rangeLabel: String,
     totalSales: Double,
-    paidToday: Double,
-    unpaidToday: Double,
-    formatter: NumberFormat
+    paidAmount: Double,
+    unpaidAmount: Double,
+    formatter: NumberFormat,
+    selectedHorizon: TimeHorizon,
+    onHorizonChange: (TimeHorizon) -> Unit,
+    onPickDate: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -484,9 +542,65 @@ private fun HeroSalesCard(
                         style = stroke
                     )
                 }
-                .padding(24.dp)
+                .padding(20.dp)
         ) {
             Column {
+                // Time Horizon Preset Tabs inside card header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(ShapeMD)
+                        .background(Color.Black.copy(alpha = 0.15f))
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf(
+                        TimeHorizon.DAY to "Day",
+                        TimeHorizon.WEEK to "Week",
+                        TimeHorizon.THIRTY_DAYS to "30D",
+                        TimeHorizon.MTD to "MTD"
+                    ).forEach { (h, label) ->
+                        val isSelected = selectedHorizon == h
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(ShapeSM)
+                                .background(if (isSelected) Color.White else Color.Transparent)
+                                .clickable { onHorizonChange(h) }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) BrandPrimary else Color.White.copy(alpha = 0.85f)
+                            )
+                        }
+                    }
+
+                    // Calendar / Custom Date Icon
+                    val isCustom = selectedHorizon == TimeHorizon.CUSTOM
+                    Box(
+                        modifier = Modifier
+                            .clip(ShapeSM)
+                            .background(if (isCustom) Color.White else Color.Transparent)
+                            .clickable { onPickDate() }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = "Custom Date",
+                            tint = if (isCustom) BrandPrimary else Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
@@ -496,15 +610,18 @@ private fun HeroSalesCard(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "Today's Sales",
+                        rangeLabel,
                         style = MaterialTheme.typography.labelLarge.copy(
                             color = Color.White.copy(alpha = 0.85f),
-                            letterSpacing = 1.sp
-                        )
+                            letterSpacing = 0.8.sp,
+                            fontSize = 13.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
 
                 AnimatedCounterText(
                     value = totalSales,
@@ -517,22 +634,24 @@ private fun HeroSalesCard(
                     color = Color.White
                 )
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(18.dp))
 
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     HeroChip(
+                        modifier = Modifier.weight(1f),
                         icon = Icons.Default.Payments,
                         label = "Paid",
-                        amount = paidToday,
+                        amount = paidAmount,
                         formatter = formatter
                     )
                     HeroChip(
+                        modifier = Modifier.weight(1f),
                         icon = Icons.Default.CreditCard,
                         label = "Unpaid",
-                        amount = unpaidToday,
+                        amount = unpaidAmount,
                         formatter = formatter
                     )
                 }
@@ -546,14 +665,16 @@ private fun HeroChip(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     amount: Double,
-    formatter: NumberFormat
+    formatter: NumberFormat,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         color = Color.White.copy(alpha = 0.16f),
-        shape = ShapeSM
+        shape = ShapeSM,
+        modifier = modifier
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -567,16 +688,16 @@ private fun HeroChip(
                 Text(
                     label,
                     style = MaterialTheme.typography.labelSmall.copy(
-                        color = Color.White.copy(alpha = 0.7f),
+                        color = Color.White.copy(alpha = 0.75f),
                         fontSize = 10.sp
                     )
                 )
-                AnimatedCounterText(
-                    value = amount,
-                    format = { formatPeso(formatter, it) },
-                    style = MaterialTheme.typography.bodySmall.copy(
+                Text(
+                    formatPeso(formatter, amount),
+                    style = MaterialTheme.typography.bodyMedium.copy(
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = Color.White,
+                        fontSize = 13.sp
                     )
                 )
             }
@@ -722,7 +843,7 @@ private fun ProductSnapshotCard(product: Product) {
                         .background(BrandPrimaryContainer),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(text = productEmoji(product.name), fontSize = 22.sp)
+                    Text(text = productEmoji(product.name, product.category), fontSize = 22.sp)
                 }
             }
 
@@ -830,8 +951,17 @@ private fun ModernSalesChart(
             Spacer(Modifier.height(10.dp))
 
             // ── Period filter chips ───────────────────────────────────
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("7D" to "7 Days", "1M" to "This Month", "1Y" to "This Year").forEach { (periodKey, label) ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(
+                    "DAY" to "Day",
+                    "7D" to "Week",
+                    "30D" to "30D",
+                    "MTD" to "MTD",
+                    "1Y" to "Year"
+                ).forEach { (periodKey, label) ->
                     FilterChip(
                         selected = chartPeriod == periodKey,
                         onClick = {

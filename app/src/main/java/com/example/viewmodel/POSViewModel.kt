@@ -83,6 +83,9 @@ class POSViewModel(
     private val _isSavingBorrow = MutableStateFlow(false)
     val isSavingBorrow: StateFlow<Boolean> = _isSavingBorrow.asStateFlow()
 
+    private val _isSavingOperationalExpense = MutableStateFlow(false)
+    val isSavingOperationalExpense: StateFlow<Boolean> = _isSavingOperationalExpense.asStateFlow()
+
     // UI State Flows from Repository
     val products = repository.products.stateIn(
         scope = viewModelScope,
@@ -129,11 +132,13 @@ class POSViewModel(
         initialValue = emptyList()
     )
 
+    val operationalExpenses = repository.operationalExpenses.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
     // ── Auth / Session ──
-    // Nullable with a null initial value (rather than seeding with AuthSettings() defaults) so
-    // the login screen can tell "still loading from Firestore" apart from "loaded, use these
-    // PINs" — otherwise a login attempt during the brief window before the first snapshot
-    // arrives would be checked against hardcoded defaults instead of the real synced PINs.
     val authSettings: StateFlow<AuthSettings?> = repository.authSettings.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -203,17 +208,25 @@ class POSViewModel(
     private val _selectedCategory = MutableStateFlow<String?>(null)
     val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
 
-    // Screen navigation flow (Custom state-based navigation for high-performance and simplicity)
-    private val _currentScreen = MutableStateFlow("HOME") // HOME, POS, ADD_PRODUCT, TRANSACTIONS, REPORTS
+    // Screen navigation flow
+    private val _currentScreen = MutableStateFlow("HOME")
     val currentScreen: StateFlow<String> = _currentScreen.asStateFlow()
 
-    // Selected product for variation selection overlay (Screen 3)
+    // Selected product for variation selection overlay
     private val _selectedProductForVariations = MutableStateFlow<Product?>(null)
     val selectedProductForVariations: StateFlow<Product?> = _selectedProductForVariations.asStateFlow()
 
     // Filter states for Transaction History
-    private val _historyDateFilter = MutableStateFlow<String?>(null) // Format: "yyyy-MM-dd" or null
-    val historyDateFilter: StateFlow<String?> = _historyDateFilter.asStateFlow()
+    private val _historyHorizon = MutableStateFlow(TimeHorizon.ALL)
+    val historyHorizon: StateFlow<TimeHorizon> = _historyHorizon.asStateFlow()
+
+    private val _historyStartDateFilter = MutableStateFlow<String?>(null) // Format: "yyyy-MM-dd" or null
+    val historyStartDateFilter: StateFlow<String?> = _historyStartDateFilter.asStateFlow()
+
+    private val _historyEndDateFilter = MutableStateFlow<String?>(null) // Format: "yyyy-MM-dd" or null
+    val historyEndDateFilter: StateFlow<String?> = _historyEndDateFilter.asStateFlow()
+
+    val historyDateFilter: StateFlow<String?> = _historyStartDateFilter.asStateFlow()
 
     private val _historyStatusFilter = MutableStateFlow<String?>(null) // "PAID", "UNPAID", or null
     val historyStatusFilter: StateFlow<String?> = _historyStatusFilter.asStateFlow()
@@ -226,6 +239,31 @@ class POSViewModel(
     val cashLogDateFilter: StateFlow<String?> = _cashLogDateFilter.asStateFlow()
 
     fun setCashLogDateFilter(date: String?) { _cashLogDateFilter.value = date }
+
+    // Dashboard Time Horizon state
+    private val _dashboardHorizon = MutableStateFlow(TimeHorizon.DAY)
+    val dashboardHorizon: StateFlow<TimeHorizon> = _dashboardHorizon.asStateFlow()
+
+    private val _customDashboardStartDate = MutableStateFlow<String?>(null)
+    val customDashboardStartDate: StateFlow<String?> = _customDashboardStartDate.asStateFlow()
+
+    private val _customDashboardEndDate = MutableStateFlow<String?>(null)
+    val customDashboardEndDate: StateFlow<String?> = _customDashboardEndDate.asStateFlow()
+
+    val customDashboardDate: StateFlow<String?> = _customDashboardStartDate.asStateFlow()
+
+    fun setDashboardHorizon(horizon: TimeHorizon, startDate: String? = null, endDate: String? = null) {
+        _dashboardHorizon.value = horizon
+        _customDashboardStartDate.value = startDate
+        _customDashboardEndDate.value = endDate ?: startDate
+        when (horizon) {
+            TimeHorizon.DAY -> _chartPeriod.value = "DAY"
+            TimeHorizon.WEEK -> _chartPeriod.value = "7D"
+            TimeHorizon.THIRTY_DAYS -> _chartPeriod.value = "30D"
+            TimeHorizon.MTD -> _chartPeriod.value = "MTD"
+            else -> {}
+        }
+    }
 
     // Product form state (for adding/editing products)
     private val _editingProduct = MutableStateFlow<Product?>(null)
@@ -284,7 +322,7 @@ class POSViewModel(
         _cartItems.value = emptyList()
     }
 
-    // Process payment and finalize transaction (6.7 — centavo-rounded calculations)
+    // Process payment and finalize transaction
     fun finalizeTransaction(status: String, customerName: String?, onSuccess: () -> Unit) {
         if (_isProcessingTransaction.value) return // guard: prevent double-tap
         _isProcessingTransaction.value = true
@@ -335,6 +373,7 @@ class POSViewModel(
         id: Int,
         name: String,
         category: String,
+        supplyCount: Double? = null,
         variationsList: List<ProductVariation>,
         onSuccess: () -> Unit
     ) {
@@ -342,17 +381,18 @@ class POSViewModel(
         _isSavingProduct.value = true
         viewModelScope.launch {
             try {
-            val product = Product(
-                id = id,
-                name = name,
-                category = category
-            )
-            if (id == 0) {
-                repository.insertProduct(product, variationsList)
-            } else {
-                repository.updateProduct(product, variationsList)
-            }
-            onSuccess()
+                val product = Product(
+                    id = id,
+                    name = name,
+                    category = category,
+                    supplyCount = supplyCount
+                )
+                if (id == 0) {
+                    repository.insertProduct(product, variationsList)
+                } else {
+                    repository.updateProduct(product, variationsList)
+                }
+                onSuccess()
             } catch (e: Exception) {
                 report("Failed to save product. ${e.message ?: ""}".trim())
             } finally {
@@ -391,7 +431,7 @@ class POSViewModel(
             try {
                 val deleted = repository.deleteCategory(category)
                 if (!deleted) {
-                    onBlocked() // 6.8 — blocked because products still use this category
+                    onBlocked()
                 }
             } catch (e: Exception) {
                 report("Failed to delete category. ${e.message ?: ""}".trim())
@@ -399,7 +439,7 @@ class POSViewModel(
         }
     }
 
-    // 6.3 — Mark an unpaid transaction as paid (settle balance)
+    // Mark an unpaid transaction as paid
     fun markTransactionAsPaid(transactionId: Int) {
         viewModelScope.launch {
             try {
@@ -410,7 +450,7 @@ class POSViewModel(
         }
     }
 
-    // 6.6 — Void a transaction and restore stock
+    // Void a transaction and restore stock
     fun voidTransaction(transaction: TransactionRecord) {
         viewModelScope.launch {
             try {
@@ -421,7 +461,7 @@ class POSViewModel(
         }
     }
 
-    // 6.6 — Delete transaction WITH stock restoration
+    // Delete transaction WITH stock restoration
     fun deleteTransactionWithStockRestore(transaction: TransactionRecord) {
         viewModelScope.launch {
             try {
@@ -432,12 +472,11 @@ class POSViewModel(
         }
     }
 
-    // Legacy delete (kept for backward compatibility, but prefer deleteTransactionWithStockRestore)
     fun deleteTransaction(transaction: TransactionRecord) {
         deleteTransactionWithStockRestore(transaction)
     }
 
-    // 6.4 — Get customer name suggestions for autocomplete
+    // Get customer name suggestions for autocomplete
     private val _customerSuggestions = MutableStateFlow<List<String>>(emptyList())
     val customerSuggestions: StateFlow<List<String>> = _customerSuggestions.asStateFlow()
 
@@ -453,7 +492,7 @@ class POSViewModel(
 
     // ── Cash-Out Log ──
     fun addCashOutEntry(cashierName: String, amount: Double, note: String?, onSuccess: () -> Unit) {
-        if (_isSavingCashOut.value) return // guard: prevent double-tap
+        if (_isSavingCashOut.value) return
         _isSavingCashOut.value = true
         viewModelScope.launch {
             try {
@@ -496,7 +535,7 @@ class POSViewModel(
 
     // ── Family Borrowing Log ──
     fun addBorrowEntry(borrowerName: String, amount: Double, note: String?, onSuccess: () -> Unit) {
-        if (_isSavingBorrow.value) return // guard: prevent double-tap
+        if (_isSavingBorrow.value) return
         _isSavingBorrow.value = true
         viewModelScope.launch {
             try {
@@ -547,7 +586,50 @@ class POSViewModel(
         }
     }
 
-    // Delete transaction (no stock restore — used for admin cleanup of voided records)
+    // ── Store Operational Expenses Log & Delivery Cycles ──
+    fun addOperationalExpense(title: String, amount: Double, note: String?, timestamp: Long = System.currentTimeMillis(), onSuccess: () -> Unit) {
+        if (_isSavingOperationalExpense.value) return
+        _isSavingOperationalExpense.value = true
+        viewModelScope.launch {
+            try {
+                repository.addOperationalExpense(
+                    OperationalExpense(title = title, amount = amount, note = note, timestamp = timestamp)
+                )
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to log operational expense. ${e.message ?: ""}".trim())
+            } finally {
+                _isSavingOperationalExpense.value = false
+            }
+        }
+    }
+
+    fun updateOperationalExpense(entry: OperationalExpense, newTitle: String, newAmount: Double, newNote: String?, newTimestamp: Long = entry.timestamp, onSuccess: () -> Unit) {
+        if (_isSavingOperationalExpense.value) return
+        _isSavingOperationalExpense.value = true
+        viewModelScope.launch {
+            try {
+                repository.updateOperationalExpense(
+                    entry.copy(title = newTitle, amount = newAmount, note = newNote, timestamp = newTimestamp)
+                )
+                onSuccess()
+            } catch (e: Exception) {
+                report("Failed to update operational expense. ${e.message ?: ""}".trim())
+            } finally {
+                _isSavingOperationalExpense.value = false
+            }
+        }
+    }
+
+    fun deleteOperationalExpense(entry: OperationalExpense) {
+        viewModelScope.launch {
+            try {
+                repository.deleteOperationalExpense(entry)
+            } catch (e: Exception) {
+                report("Failed to delete operational expense. ${e.message ?: ""}".trim())
+            }
+        }
+    }
 
     // ── Settings: Clear all Firestore data ──
     private val _isClearingData = MutableStateFlow(false)
@@ -588,14 +670,36 @@ class POSViewModel(
     }
 
     // Transaction History Filter Actions
-    fun setHistoryFilters(date: String?, status: String?, customer: String?) {
-        _historyDateFilter.value = date
+    fun setHistoryHorizon(horizon: TimeHorizon) {
+        _historyHorizon.value = horizon
+        if (horizon != TimeHorizon.CUSTOM) {
+            _historyStartDateFilter.value = null
+            _historyEndDateFilter.value = null
+        }
+    }
+
+    fun setHistoryFilters(
+        startDate: String?,
+        endDate: String? = null,
+        status: String? = null,
+        customer: String? = null,
+        horizon: TimeHorizon? = null
+    ) {
+        _historyStartDateFilter.value = startDate
+        _historyEndDateFilter.value = endDate ?: startDate
         _historyStatusFilter.value = status
         _historyCustomerFilter.value = customer
+        if (horizon != null) {
+            _historyHorizon.value = horizon
+        } else if (startDate != null) {
+            _historyHorizon.value = TimeHorizon.CUSTOM
+        }
     }
 
     fun clearHistoryFilters() {
-        _historyDateFilter.value = null
+        _historyHorizon.value = TimeHorizon.ALL
+        _historyStartDateFilter.value = null
+        _historyEndDateFilter.value = null
         _historyStatusFilter.value = null
         _historyCustomerFilter.value = null
     }
@@ -628,7 +732,44 @@ class POSViewModel(
         initialValue = DashboardStats()
     )
 
-    // Today's total employee expenses (sum of cash-out entries logged today).
+    // Dynamic Dashboard Stats reacting to selected TimeHorizon and date range
+    val dashboardRangeStats = combine(
+        transactions,
+        cashOutEntries,
+        _dashboardHorizon,
+        _customDashboardStartDate,
+        _customDashboardEndDate
+    ) { txList, expenseList, horizon, startDate, endDate ->
+        val boundary = getTimeHorizonBoundary(horizon, startDate, endDate)
+        val validTxs = txList.filter {
+            it.status != "VOIDED" && (horizon == TimeHorizon.ALL || it.timestamp in boundary.startTimestamp..boundary.endTimestamp)
+        }
+        val totalSales = validTxs.sumOf { it.totalAmount }
+        val paid = validTxs.filter { it.status == "PAID" }.sumOf { it.totalAmount }
+        val unpaid = validTxs.filter { it.status == "UNPAID" }.sumOf { it.totalAmount }
+        val count = validTxs.size
+
+        val expenses = expenseList.filter {
+            horizon == TimeHorizon.ALL || it.timestamp in boundary.startTimestamp..boundary.endTimestamp
+        }.sumOf { it.amount }
+
+        RangeSalesStats(
+            horizon = horizon,
+            rangeLabel = boundary.displayLabel,
+            totalSales = totalSales,
+            paidAmount = paid,
+            unpaidAmount = unpaid,
+            salesCount = count,
+            expenseTotal = expenses,
+            netAmount = totalSales - expenses
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = RangeSalesStats()
+    )
+
+    // Today's total employee expenses
     val todayExpenseTotal = cashOutEntries.map { entries ->
         val sdf = shopDateFormat("yyyy-MM-dd")
         val todayStr = sdf.format(Date())
@@ -639,8 +780,7 @@ class POSViewModel(
         initialValue = 0.0
     )
 
-    // Outstanding-borrow summary — same shape as the Unpaid-transaction summary on
-    // TransactionsScreen (total, count, oldest age).
+    // Outstanding-borrow summary
     val borrowStats = borrowEntries.map { entries ->
         val outstanding = entries.filter { it.returnedTimestamp == null }
         BorrowStats(
@@ -656,11 +796,20 @@ class POSViewModel(
         initialValue = BorrowStats()
     )
 
-    // Chart period filter: "7D", "1M", "1Y"
+    // Chart period filter
     private val _chartPeriod = MutableStateFlow("7D")
     val chartPeriod: StateFlow<String> = _chartPeriod.asStateFlow()
 
-    fun setChartPeriod(period: String) { _chartPeriod.value = period }
+    fun setChartPeriod(period: String) { 
+        _chartPeriod.value = period
+        when (period) {
+            "DAY", "1D" -> _dashboardHorizon.value = TimeHorizon.DAY
+            "7D", "WEEK" -> _dashboardHorizon.value = TimeHorizon.WEEK
+            "30D" -> _dashboardHorizon.value = TimeHorizon.THIRTY_DAYS
+            "MTD", "1M" -> _dashboardHorizon.value = TimeHorizon.MTD
+            else -> {}
+        }
+    }
 
     // Chart data — reacts to period filter for weekly / monthly / yearly views
     val salesChartData = combine(transactions, _chartPeriod) { txList, period ->
@@ -669,6 +818,23 @@ class POSViewModel(
         val items = mutableListOf<ChartDataPoint>()
 
         when (period) {
+            "DAY", "1D" -> {
+                val todayStr = sdf.format(Date())
+                val todayTxs = txList.filter { sdf.format(Date(it.timestamp)) == todayStr && it.status != "VOIDED" }
+                val hourFmt = shopDateFormat("h a")
+                val hourSlots = listOf(6, 8, 10, 12, 14, 16, 18, 20)
+                hourSlots.forEach { h ->
+                    cal.time = Date()
+                    cal.set(Calendar.HOUR_OF_DAY, h)
+                    val label = hourFmt.format(cal.time)
+                    val slotTotal = todayTxs.filter {
+                        cal.time = Date(it.timestamp)
+                        val th = cal.get(Calendar.HOUR_OF_DAY)
+                        th in h until (h + 2)
+                    }.sumOf { it.totalAmount }
+                    items.add(ChartDataPoint(label, slotTotal, todayStr))
+                }
+            }
             "7D" -> {
                 for (i in 0 until 7) {
                     cal.time = Date()
@@ -680,14 +846,25 @@ class POSViewModel(
                 }
                 items.reverse()
             }
-            "1M" -> {
+            "30D" -> {
+                for (i in 0 until 30) {
+                    cal.time = Date()
+                    cal.add(Calendar.DAY_OF_YEAR, -i)
+                    val dateStr = sdf.format(cal.time)
+                    val label = shopDateFormat("d").format(cal.time)
+                    val total = txList.filter { sdf.format(Date(it.timestamp)) == dateStr && it.status != "VOIDED" }.sumOf { it.totalAmount }
+                    items.add(ChartDataPoint(label, total, dateStr))
+                }
+                items.reverse()
+            }
+            "MTD", "1M" -> {
                 cal.time = Date()
-                val daysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-                for (d in 1..daysInMonth) {
+                val currentDay = cal.get(Calendar.DAY_OF_MONTH)
+                for (d in 1..currentDay) {
                     cal.time = Date()
                     cal.set(Calendar.DAY_OF_MONTH, d)
                     val dateStr = sdf.format(cal.time)
-                    val label = "${d}"
+                    val label = "$d"
                     val total = txList.filter { sdf.format(Date(it.timestamp)) == dateStr && it.status != "VOIDED" }.sumOf { it.totalAmount }
                     items.add(ChartDataPoint(label, total, dateStr))
                 }
@@ -716,24 +893,53 @@ class POSViewModel(
         initialValue = emptyList()
     )
 
+    // Grouped criteria to cleanly combine with transaction flows without exceeding combine arity limits
+    private val _historyFilterCriteria = combine(
+        _historyHorizon,
+        _historyStartDateFilter,
+        _historyEndDateFilter,
+        _historyStatusFilter,
+        _historyCustomerFilter
+    ) { horizon, startDate, endDate, status, customer ->
+        HistoryFilterCriteria(horizon, startDate, endDate, status, customer)
+    }
+
     // Filtered transaction history
     val filteredTransactions = combine(
         transactions,
-        _historyDateFilter,
-        _historyStatusFilter,
-        _historyCustomerFilter
-    ) { txList, date, status, customer ->
-        val sdf = shopDateFormat("yyyy-MM-dd")
+        _historyFilterCriteria
+    ) { txList, criteria ->
+        val boundary = getTimeHorizonBoundary(criteria.horizon, criteria.startDate, criteria.endDate)
         txList.filter { tx ->
-            val matchDate = date == null || sdf.format(Date(tx.timestamp)) == date
-            val matchStatus = status == null || tx.status.equals(status, ignoreCase = true)
-            val matchCustomer = customer == null || (tx.customerName != null && tx.customerName.contains(customer, ignoreCase = true))
-            matchDate && matchStatus && matchCustomer
+            val matchRange = criteria.horizon == TimeHorizon.ALL || (tx.timestamp in boundary.startTimestamp..boundary.endTimestamp)
+            val matchStatus = criteria.status == null || tx.status.equals(criteria.status, ignoreCase = true)
+            val matchCustomer = criteria.customer == null || (tx.customerName != null && tx.customerName.contains(criteria.customer, ignoreCase = true))
+            matchRange && matchStatus && matchCustomer
         }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
+    )
+
+    // Range summary for the currently filtered transactions (total sales, paid, unpaid, order count)
+    val historyRangeSummary = combine(
+        filteredTransactions,
+        _historyFilterCriteria
+    ) { txList, criteria ->
+        val validTxs = txList.filter { it.status != "VOIDED" }
+        val boundary = getTimeHorizonBoundary(criteria.horizon, criteria.startDate, criteria.endDate)
+        RangeSalesSummary(
+            totalSales = validTxs.sumOf { it.totalAmount },
+            paidAmount = validTxs.filter { it.status == "PAID" }.sumOf { it.totalAmount },
+            unpaidAmount = validTxs.filter { it.status == "UNPAID" }.sumOf { it.totalAmount },
+            count = validTxs.size,
+            rangeLabel = boundary.displayLabel
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = RangeSalesSummary()
     )
 
     // Filtered cash-out log
@@ -757,7 +963,106 @@ class POSViewModel(
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
     )
+
+    // Dynamic Store Operational Cycles:
+    // When a store expense (e.g. ₱10,000 delivery) is logged, it calculates period sales and employee expenses
+    // from that timestamp up to the next logged store expense (or now if ongoing).
+    val operationalCycles: StateFlow<List<OperationalCycleSummary>> = combine(
+        operationalExpenses,
+        transactions,
+        cashOutEntries
+    ) { opList, txList, cashList ->
+        if (opList.isEmpty()) return@combine emptyList()
+        val sortedAsc = opList.sortedBy { it.timestamp }
+        val summaries = mutableListOf<OperationalCycleSummary>()
+        val n = sortedAsc.size
+
+        for (i in 0 until n) {
+            val curr = sortedAsc[i]
+            val startTime = curr.timestamp
+            val endTime = if (i + 1 < n) sortedAsc[i + 1].timestamp else null
+            val isActive = (i == n - 1)
+
+            val cycleTxs = txList.filter { tx ->
+                tx.status != "VOIDED" &&
+                tx.timestamp >= startTime &&
+                (endTime == null || tx.timestamp < endTime)
+            }
+            val periodSales = cycleTxs.sumOf { it.totalAmount }
+            val periodOrders = cycleTxs.size
+
+            val periodEmpExpenses = cashList.filter { co ->
+                co.timestamp >= startTime &&
+                (endTime == null || co.timestamp < endTime)
+            }.sumOf { it.amount }
+
+            val totalCost = (curr.amount + periodEmpExpenses).roundToCentavos()
+            val net = (periodSales - totalCost).roundToCentavos()
+            val recoveryRate = if (totalCost > 0) (periodSales / totalCost) * 100.0 else 100.0
+
+            summaries.add(
+                OperationalCycleSummary(
+                    expense = curr,
+                    periodStartTimestamp = startTime,
+                    periodEndTimestamp = endTime,
+                    periodSalesTotal = periodSales,
+                    periodOrderCount = periodOrders,
+                    periodEmployeeExpenses = periodEmpExpenses,
+                    totalPeriodCost = totalCost,
+                    netBalance = net,
+                    recoveryRate = recoveryRate,
+                    isActive = isActive
+                )
+            )
+        }
+
+        summaries.reversed()
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 }
+
+data class OperationalCycleSummary(
+    val expense: OperationalExpense,
+    val periodStartTimestamp: Long,
+    val periodEndTimestamp: Long?,
+    val periodSalesTotal: Double,
+    val periodOrderCount: Int,
+    val periodEmployeeExpenses: Double,
+    val totalPeriodCost: Double,
+    val netBalance: Double,
+    val recoveryRate: Double,
+    val isActive: Boolean
+)
+
+private data class HistoryFilterCriteria(
+    val horizon: TimeHorizon = TimeHorizon.ALL,
+    val startDate: String? = null,
+    val endDate: String? = null,
+    val status: String? = null,
+    val customer: String? = null
+)
+
+data class RangeSalesStats(
+    val horizon: TimeHorizon = TimeHorizon.DAY,
+    val rangeLabel: String = "Today",
+    val totalSales: Double = 0.0,
+    val paidAmount: Double = 0.0,
+    val unpaidAmount: Double = 0.0,
+    val salesCount: Int = 0,
+    val expenseTotal: Double = 0.0,
+    val netAmount: Double = 0.0
+)
+
+data class RangeSalesSummary(
+    val totalSales: Double = 0.0,
+    val paidAmount: Double = 0.0,
+    val unpaidAmount: Double = 0.0,
+    val count: Int = 0,
+    val rangeLabel: String = ""
+)
 
 data class DashboardStats(
     val totalSalesToday: Double = 0.0,

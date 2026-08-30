@@ -87,6 +87,20 @@ interface PendingTransactionDao {
     @Query("SELECT COUNT(*) FROM pending_borrows WHERE synced_at IS NULL")
     fun pendingBorrowCount(): Flow<Int>
 
+    // ── Operational Expense entries ──
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOperationalExpense(entry: PendingOperationalExpenseEntity): Long
+
+    @Query("SELECT * FROM pending_operational_expenses WHERE synced_at IS NULL ORDER BY created_at ASC")
+    suspend fun getUnsyncedOperationalExpenses(): List<PendingOperationalExpenseEntity>
+
+    @Query("DELETE FROM pending_operational_expenses WHERE localId = :localId")
+    suspend fun deleteOperationalExpenseById(localId: Long)
+
+    @Query("SELECT COUNT(*) FROM pending_operational_expenses WHERE synced_at IS NULL")
+    fun pendingOperationalExpenseCount(): Flow<Int>
+
     // ── Combined pending count (all types) for the UI badge ──
 
     @Query("""
@@ -94,6 +108,7 @@ interface PendingTransactionDao {
             (SELECT COUNT(*) FROM pending_transactions WHERE synced_at IS NULL) +
             (SELECT COUNT(*) FROM pending_cash_outs     WHERE synced_at IS NULL) +
             (SELECT COUNT(*) FROM pending_borrows       WHERE synced_at IS NULL) +
+            (SELECT COUNT(*) FROM pending_operational_expenses WHERE synced_at IS NULL) +
             (SELECT COUNT(*) FROM pending_sheet_entries WHERE synced_at IS NULL)
         )
     """)
@@ -104,7 +119,8 @@ interface PendingTransactionDao {
         SELECT (
             (SELECT COUNT(*) FROM pending_transactions WHERE synced_at IS NULL) +
             (SELECT COUNT(*) FROM pending_cash_outs     WHERE synced_at IS NULL) +
-            (SELECT COUNT(*) FROM pending_borrows       WHERE synced_at IS NULL)
+            (SELECT COUNT(*) FROM pending_borrows       WHERE synced_at IS NULL) +
+            (SELECT COUNT(*) FROM pending_operational_expenses WHERE synced_at IS NULL)
         )
     """)
     fun userPendingCount(): Flow<Int>
@@ -125,6 +141,7 @@ interface PendingTransactionDao {
         deleteAllPendingTransactions()
         deleteAllPendingCashOuts()
         deleteAllPendingBorrows()
+        deleteAllPendingOperationalExpenses()
         deleteAllPendingSheetEntries()
     }
 
@@ -136,6 +153,9 @@ interface PendingTransactionDao {
 
     @Query("DELETE FROM pending_borrows")
     suspend fun deleteAllPendingBorrows()
+
+    @Query("DELETE FROM pending_operational_expenses")
+    suspend fun deleteAllPendingOperationalExpenses()
 
     @Query("DELETE FROM pending_sheet_entries")
     suspend fun deleteAllPendingSheetEntries()

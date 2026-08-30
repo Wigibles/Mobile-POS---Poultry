@@ -11,9 +11,10 @@ import androidx.room.RoomDatabase
         PendingTransactionItemEntity::class,
         PendingCashOutEntity::class,
         PendingBorrowEntity::class,
+        PendingOperationalExpenseEntity::class,
         PendingSheetEntry::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

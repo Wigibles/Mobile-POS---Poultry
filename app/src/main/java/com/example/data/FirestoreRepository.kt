@@ -10,6 +10,7 @@ import com.example.data.local.PendingTransactionItemEntity
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.WriteBatch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -276,6 +277,44 @@ class FirestorePOSRepository(
         db.collection(BORROWS).document("${entry.id}").delete().await()
     }
 
+    // ── Store Operational Expenses Log ──
+    val operationalExpenses: Flow<List<OperationalExpense>> = callbackFlow {
+        val listener = db.collection(OPERATIONAL_EXPENSES)
+            .orderBy("timestamp", Query.Direction.DESCENDING)
+            .limit(RECENT_OPERATIONAL_EXPENSES_LIMIT)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) { reportListenerError("operational expenses", error); return@addSnapshotListener }
+                trySend(snapshot?.documents?.mapNotNull { it.toOperationalExpense() } ?: emptyList())
+            }
+        awaitClose { listener.remove() }
+    }
+
+    suspend fun addOperationalExpense(entry: OperationalExpense): Int = withContext(Dispatchers.IO) {
+        if (!networkMonitor.isOnline.value) {
+            val localId = pendingDao.insertOperationalExpense(
+                com.example.data.local.PendingOperationalExpenseEntity(
+                    title = entry.title,
+                    amount = entry.amount.roundToCentavos(),
+                    note = entry.note,
+                    createdAt = entry.timestamp
+                )
+            )
+            Log.i(TAG, "Queued operational expense locally (localId=$localId) — will sync when online")
+            return@withContext (-localId).toInt()
+        }
+        val id = nextId(OPERATIONAL_EXPENSES)
+        db.collection(OPERATIONAL_EXPENSES).document("$id").set(entry.copy(id = id).toMap()).await()
+        id
+    }
+
+    suspend fun updateOperationalExpense(entry: OperationalExpense) = withContext(Dispatchers.IO) {
+        db.collection(OPERATIONAL_EXPENSES).document("${entry.id}").set(entry.toMap()).await()
+    }
+
+    suspend fun deleteOperationalExpense(entry: OperationalExpense) = withContext(Dispatchers.IO) {
+        db.collection(OPERATIONAL_EXPENSES).document("${entry.id}").delete().await()
+    }
+
     fun getVariationsForProduct(productId: Int): Flow<List<ProductVariation>> = callbackFlow {
         val listener = db.collection(VARIATIONS)
             .whereEqualTo("productId", productId)
@@ -457,6 +496,9 @@ class FirestorePOSRepository(
                 )
             }
 
+            // Deduct stock for products with supply tracking (quantity * multiplier)
+            applySupplyDeduction(batch, items.map { it.productId to (it.quantity * it.multiplier) })
+
             batch.commit().await()
 
             // Send to Google Sheets (queued if offline / send fails)
@@ -528,6 +570,9 @@ class FirestorePOSRepository(
                         )
                     }
 
+                    // Deduct stock for products with supply tracking (quantity * multiplier)
+                    applySupplyDeduction(batch, items.map { it.productId to (it.quantity * it.multiplier) })
+
                     batch.commit().await()
                     pendingDao.deleteById(tx.localId)
                     synced++
@@ -582,6 +627,29 @@ class FirestorePOSRepository(
                     Log.i(TAG, "Synced borrow localId=${br.localId} → Firestore id=$id")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to sync borrow localId=${br.localId}; will retry later", e)
+                    break
+                }
+            }
+
+            // ── Sync pending operational expenses ──
+            val unsyncedOperational = pendingDao.getUnsyncedOperationalExpenses()
+            for (oe in unsyncedOperational) {
+                try {
+                    val id = nextId(OPERATIONAL_EXPENSES)
+                    db.collection(OPERATIONAL_EXPENSES).document("$id").set(
+                        mapOf(
+                            "id" to id,
+                            "title" to oe.title,
+                            "amount" to oe.amount,
+                            "note" to oe.note,
+                            "timestamp" to oe.createdAt
+                        )
+                    ).await()
+                    pendingDao.deleteOperationalExpenseById(oe.localId)
+                    synced++
+                    Log.i(TAG, "Synced operational expense localId=${oe.localId} → Firestore id=$id")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to sync operational expense localId=${oe.localId}; will retry later", e)
                     break
                 }
             }
@@ -660,28 +728,94 @@ class FirestorePOSRepository(
         }
     }
 
-    // ── Void Transaction ── (flip status to VOIDED)
+    // ── Void Transaction ── (flip status to VOIDED & restore supply)
     suspend fun voidTransaction(transaction: TransactionRecord) = withContext(Dispatchers.IO) {
         Log.d(TAG, "Voiding transaction id=${transaction.id}")
-        db.collection(TRANSACTIONS).document("${transaction.id}")
-            .update("status", "VOIDED").await()
+        val wasAlreadyVoided = transaction.status == "VOIDED"
+
+        val itemDocs = db.collection(TRANSACTION_ITEMS)
+            .whereEqualTo("transactionId", transaction.id).get().await()
+        val items = itemDocs.documents.mapNotNull { it.toTransactionItem() }
+
+        val batch = db.batch()
+        batch.update(db.collection(TRANSACTIONS).document("${transaction.id}"), "status", "VOIDED")
+
+        // Restore supply if the transaction was active (not already voided)
+        if (!wasAlreadyVoided && items.isNotEmpty()) {
+            applySupplyRestoration(batch, items.map { it.productId to (it.quantity * it.multiplier) })
+        }
+
+        batch.commit().await()
         Log.i(TAG, "Successfully voided transaction ${transaction.id}")
 
         // Also update Google Sheets: set Status → VOIDED
         sheetSyncManager.enqueueStatusUpdate(transaction.id, "VOIDED")
     }
 
-    // ── Delete Transaction ── (delete items + delete tx, atomically)
+    // ── Delete Transaction ── (delete items + delete tx + restore supply if active, atomically)
     suspend fun deleteTransactionWithStockRestore(transaction: TransactionRecord) =
         withContext(Dispatchers.IO) {
             val itemDocs = db.collection(TRANSACTION_ITEMS)
                 .whereEqualTo("transactionId", transaction.id).get().await()
+            val items = itemDocs.documents.mapNotNull { it.toTransactionItem() }
 
             val batch = db.batch()
             itemDocs.documents.forEach { batch.delete(it.reference) }
             batch.delete(db.collection(TRANSACTIONS).document("${transaction.id}"))
+
+            // Restore supply if the deleted transaction was active
+            if (transaction.status != "VOIDED" && items.isNotEmpty()) {
+                applySupplyRestoration(batch, items.map { it.productId to (it.quantity * it.multiplier) })
+            }
+
             batch.commit().await()
         }
+
+    private suspend fun applySupplyDeduction(
+        batch: WriteBatch,
+        itemPairs: List<Pair<Int, Double>> // (productId, totalBaseQuantity = quantity * multiplier)
+    ) {
+        val deductions = itemPairs.groupBy({ it.first }, { it.second })
+            .mapValues { (_, units) -> units.sum() }
+
+        for ((pId, deduction) in deductions) {
+            if (pId <= 0) continue
+            try {
+                val productRef = db.collection(PRODUCTS).document("$pId")
+                val prodSnap = productRef.get().await()
+                val currentSupply = prodSnap.getDouble("supplyCount") ?: prodSnap.getLong("supplyCount")?.toDouble()
+                if (currentSupply != null) {
+                    val newSupply = (currentSupply - deduction).coerceAtLeast(0.0)
+                    batch.update(productRef, "supplyCount", newSupply)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to deduct supply for product $pId", e)
+            }
+        }
+    }
+
+    private suspend fun applySupplyRestoration(
+        batch: WriteBatch,
+        itemPairs: List<Pair<Int, Double>> // (productId, totalBaseQuantity = quantity * multiplier)
+    ) {
+        val restorations = itemPairs.groupBy({ it.first }, { it.second })
+            .mapValues { (_, units) -> units.sum() }
+
+        for ((pId, restoration) in restorations) {
+            if (pId <= 0) continue
+            try {
+                val productRef = db.collection(PRODUCTS).document("$pId")
+                val prodSnap = productRef.get().await()
+                val currentSupply = prodSnap.getDouble("supplyCount") ?: prodSnap.getLong("supplyCount")?.toDouble()
+                if (currentSupply != null) {
+                    val newSupply = currentSupply + restoration
+                    batch.update(productRef, "supplyCount", newSupply)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to restore supply for product $pId", e)
+            }
+        }
+    }
 
     // ── Customer Suggestions ──
     suspend fun getUnpaidCustomerNames(): List<String> = withContext(Dispatchers.IO) {
@@ -783,21 +917,14 @@ class FirestorePOSRepository(
         private const val AUTH_DOC = "auth"
         private const val CASH_OUTS = "cash_outs"
         private const val BORROWS = "borrows"
+        private const val OPERATIONAL_EXPENSES = "operational_expenses"
         private const val SHEET_TIMEZONE = "Asia/Manila"
 
-        // Without a cap, these two listeners re-sync the entire sales history on every screen
-        // load, forever — fine at low volume, but it only gets slower and pricier as the
-        // business grows. This is a safety net, not real pagination: it bounds the worst case
-        // generously (years of typical small-shop volume) without changing any current
-        // behavior. If the shop ever grows enough to hit this limit, replace it with real
-        // cursor-based pagination in the Transactions screen (there is already a per-transaction
-        // getTransactionItems() query to build on) rather than raising these numbers —
-        // 10,000 is Firestore's hard maximum for a query's limit() clause, so
-        // RECENT_TRANSACTION_ITEMS_LIMIT can't go any higher.
         private const val RECENT_TRANSACTIONS_LIMIT: Long = 3000
         private const val RECENT_TRANSACTION_ITEMS_LIMIT: Long = 10000
         private const val RECENT_CASH_OUTS_LIMIT: Long = 3000
         private const val RECENT_BORROWS_LIMIT: Long = 3000
+        private const val RECENT_OPERATIONAL_EXPENSES_LIMIT: Long = 3000
 
         // ── Google Sheets payload builder ──────────────────────────────────
 
@@ -843,7 +970,8 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
         Product(
             id = getLong("id")?.toInt() ?: return null,
             name = getString("name") ?: "",
-            category = getString("category") ?: ""
+            category = getString("category") ?: "",
+            supplyCount = getDouble("supplyCount") ?: getLong("supplyCount")?.toDouble()
         )
     } catch (e: Exception) {
         Log.w(TAG, "Skipping malformed product ${id}", e); null
@@ -851,7 +979,7 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
 }
 
 private fun Product.toMap(): Map<String, Any?> = mapOf(
-    "id" to id, "name" to name, "category" to category
+    "id" to id, "name" to name, "category" to category, "supplyCount" to supplyCount
 )
 
 private fun com.google.firebase.firestore.DocumentSnapshot.toVariation(): ProductVariation? {
@@ -969,6 +1097,25 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toBorrowEntry(): Borr
 private fun BorrowEntry.toMap(): Map<String, Any?> = mapOf(
     "id" to id, "borrowerName" to borrowerName, "amount" to amount,
     "note" to note, "timestamp" to timestamp, "returnedTimestamp" to returnedTimestamp
+)
+
+private fun com.google.firebase.firestore.DocumentSnapshot.toOperationalExpense(): OperationalExpense? {
+    return try {
+        OperationalExpense(
+            id = getLong("id")?.toInt() ?: return null,
+            title = getString("title") ?: "",
+            amount = getDouble("amount") ?: 0.0,
+            note = getString("note"),
+            timestamp = getLong("timestamp") ?: System.currentTimeMillis()
+        )
+    } catch (e: Exception) {
+        Log.w(TAG, "Skipping malformed operational expense ${id}", e); null
+    }
+}
+
+private fun OperationalExpense.toMap(): Map<String, Any?> = mapOf(
+    "id" to id, "title" to title, "amount" to amount,
+    "note" to note, "timestamp" to timestamp
 )
 
 private fun com.google.firebase.firestore.DocumentSnapshot.toAuthSettings(): AuthSettings {

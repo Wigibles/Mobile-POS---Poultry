@@ -3,7 +3,8 @@ package com.example.data
 data class Product(
     val id: Int = 0,
     val name: String,
-    val category: String
+    val category: String,
+    val supplyCount: Double? = null
 )
 
 data class ProductVariation(
@@ -72,3 +73,13 @@ data class BorrowEntry(
     val timestamp: Long = System.currentTimeMillis(),
     val returnedTimestamp: Long? = null // null = still outstanding
 )
+
+// Store operational expense (e.g. delivery of feeds/supplies) that initiates a sales-tracking cycle.
+data class OperationalExpense(
+    val id: Int = 0,
+    val title: String,
+    val amount: Double,
+    val note: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+

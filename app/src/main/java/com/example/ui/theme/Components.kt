@@ -31,21 +31,75 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.NumberFormat
+import java.util.Locale
 
 // ── Shared visual helpers used across Dashboard/POS/Inventory/Transactions ──
 // Consolidates logic that was previously duplicated per-screen.
 
-/** Emoji glyph for a product, guessed from its name. Used as a lightweight thumbnail
+/** Emoji glyph for a product, matching its category and name. Used as a lightweight thumbnail
  *  everywhere a product photo would otherwise go. */
-fun productEmoji(name: String): String = when {
-    name.contains("Booster", ignoreCase = true) -> "🐣"
-    name.contains("Grower", ignoreCase = true) -> "🐓"
-    name.contains("Layer", ignoreCase = true) -> "🥚"
-    name.contains("Vitamin", ignoreCase = true) -> "💊"
-    name.contains("Feeder", ignoreCase = true) -> "🥣"
-    name.contains("Waterer", ignoreCase = true) -> "🪣"
-    name.contains("Antibiotic", ignoreCase = true) || name.contains("Medicine", ignoreCase = true) -> "💉"
-    else -> "🌾"
+fun productEmoji(name: String, category: String = ""): String {
+    val lowerName = name.lowercase(Locale.ROOT)
+    val lowerCat = category.lowercase(Locale.ROOT)
+    val text = "$lowerName $lowerCat"
+
+    val words = text.split(Regex("[^a-z0-9\\-]+")).filter { it.isNotEmpty() }.toSet()
+
+    fun hasWord(word: String): Boolean = words.contains(word)
+
+    fun hasAny(vararg keywords: String): Boolean = keywords.any { kw -> text.contains(kw) }
+
+    return when {
+        // ── 1. Injectables & Vaccines (💉) ──
+        lowerCat in listOf("injectable", "injectables", "vaccine", "vaccines", "biologics") ||
+        hasAny("injectable", "injection", "vaccine", "vial", "ampoule", "biologic", "bexan xp", "ncd", "gumboro", "coryza", "fowl pox") ||
+        hasWord("inject") -> "💉"
+
+        // ── 2. Shampoo, Soap, Hygiene & Parasiticides (🧼) ──
+        lowerCat in listOf("shampoo", "soap", "hygiene", "grooming", "disinfectant", "disinfectants") ||
+        hasAny("shampoo", "soap", "wash out", "zero mite", "disinfect", "hygiene", "cleaner") ||
+        hasWord("wash") || hasWord("bath") || hasWord("mite") || hasWord("lice") -> "🧼"
+
+        // ── 3. Powders & Water Solubles (🧪) ──
+        lowerCat in listOf("powder", "powders", "premix", "water soluble", "soluble") ||
+        hasAny("powder", "pwd", "soluble", "wsp", "dextrose", "electrolyte", "selectogen", "vetracin", "tylosin", "probiotic", "premix", "trisul", "amprol") ||
+        hasWord("ws") || hasWord("mix") -> "🧪"
+
+        // ── 4. Liquids, Syrups & Drops (💧) ──
+        lowerCat in listOf("liquid", "liquids", "syrup", "drops", "drop", "oral solution") ||
+        hasAny("liquid", "syrup", "drop", "dropper", "suspension", "solution", "tonic", "respigen", "cod liver oil") ||
+        hasWord("oil") -> "💧"
+
+        // ── 5. Specific Accessories Overrides (🪢, 🥊, 🔪, 🏷️, 🥣, 🪣, 📦, ⚖️) ──
+        hasAny("cord", "tether", "leash", "tali", "tie cord") || hasWord("tie") || hasWord("rope") -> "🪢"
+        hasAny("glove", "boxing", "sparring", "muzzle", "boots", "tari cover") -> "🥊"
+        hasAny("tari", "gaff", "blade", "sheath", "slasher") || hasWord("knife") -> "🔪"
+        hasAny("wing band", "leg band", "tag", "tags") || hasWord("band") || hasWord("ring") -> "🏷️"
+        hasAny("feeder", "feeding tray") || hasWord("tray") || hasWord("plate") -> "🥣"
+        hasAny("waterer", "drinker", "gallon", "nipple") || hasWord("cup") -> "🪣"
+        hasAny("cage", "coop", "teepee", "crate", "scratch pen", "carrying box") || hasWord("net") || hasWord("trap") -> "📦"
+        hasAny("scale", "timbangan") || hasWord("weigh") -> "⚖️"
+
+        // ── 6. General Accessories Category (🧰) ──
+        lowerCat.contains("access") || lowerCat.contains("equip") || lowerCat.contains("suppl") ||
+        lowerCat.contains("tool") || lowerCat.contains("gear") || lowerCat.contains("hardware") -> "🧰"
+
+        // ── 7. Capsules, Tablets & Pills (💊) ──
+        lowerCat in listOf("capsule", "capsules", "tablet", "tablets", "pill", "pills", "medicine", "medicines", "supplements", "vitamins") ||
+        hasAny("capsule", "tablet", "pill", "bolus", "b12", "b-12", "b50", "b-50", "calvix", "pollen", "doxylac", "amptyl", "astig", "voltar", "viminolak", "red gel", "promotor", "reload plus", "tricon", "multivitamin", "vitamin", "calcium", "dewormer", "vermex", "anthelmintic") ||
+        hasWord("cap") || hasWord("caps") || hasWord("tab") || hasWord("tabs") -> "💊"
+
+        // ── 8. Feeds, Grains & Seeds by Life Stage / Type ──
+        hasAny("booster", "starter", "pre-starter", "baby chick", "sisiw") || hasWord("chick") -> "🐣"
+        hasAny("grower", "broiler", "cockerel", "stag", "bullstag", "rooster", "manok") -> "🐓"
+        hasAny("layer", "quail", "pugo") || hasWord("egg") || hasWord("eggs") -> "🥚"
+        hasAny("conditioner", "conditioning", "derby", "champion", "energy", "maintenance", "ready to fight", "bullet") || hasWord("power") -> "⚡"
+        hasAny("corn", "mais", "grits") -> "🌽"
+        hasAny("sunflower", "seed", "seeds", "munggo") || hasWord("peas") || hasWord("bean") || hasWord("beans") -> "🌱"
+
+        // ── 9. Default Feeds / Grains / General Fallback ──
+        else -> "🌾"
+    }
 }
 
 /** Formats a peso amount, swapping the formatter's literal "PHP" prefix for the ₱ symbol. */

@@ -387,28 +387,20 @@ fun POSScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // "Log as Paid" is the everyday action so it gets the filled, dominant button;
-                // unpaid tabs are routine too (not an error), so they get a calm tonal style
-                // rather than alarm-red fill.
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = {
+                Button(
+                    onClick = {
                         if (cartItems.isEmpty() || isProcessing) return@Button
                         showCartSheet = false
-                        confirmationStatus = "UNPAID"; customerNameInput = ""
-                        viewModel.loadCustomerSuggestions()
+                        confirmationStatus = "PAID"
+                        customerNameInput = ""
                         showConfirmationDialog = true
-                    }, enabled = cartItems.isNotEmpty() && !isProcessing,
-                        colors = ButtonDefaults.buttonColors(containerColor = ColorUnpaid.copy(alpha = 0.12f), contentColor = ColorUnpaid),
-                        shape = ShapeSM, modifier = Modifier.weight(1f).height(52.dp)
-                    ) { Text("Log as Unpaid", color = ColorUnpaid, fontWeight = FontWeight.Bold) }
-                    Button(onClick = {
-                        if (cartItems.isEmpty() || isProcessing) return@Button
-                        showCartSheet = false
-                        confirmationStatus = "PAID"; customerNameInput = ""
-                        showConfirmationDialog = true
-                    }, enabled = cartItems.isNotEmpty() && !isProcessing, colors = ButtonDefaults.buttonColors(containerColor = ColorPaid),
-                        shape = ShapeSM, modifier = Modifier.weight(1.4f).height(52.dp)
-                    ) { Text("Log as Paid", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp) }
+                    },
+                    enabled = cartItems.isNotEmpty() && !isProcessing,
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorPaid),
+                    shape = ShapeSM,
+                    modifier = Modifier.fillMaxWidth().height(52.dp)
+                ) {
+                    Text("Log as Paid", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 }
 
                 Spacer(Modifier.height(24.dp))
@@ -805,7 +797,7 @@ fun POSProductCard(
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                     .background(SurfaceContainer)
             ) {
-                Text(text = productEmoji(product.name), fontSize = 32.sp, modifier = Modifier.align(Alignment.Center))
+                Text(text = productEmoji(product.name, product.category), fontSize = 32.sp, modifier = Modifier.align(Alignment.Center))
 
                 Box(
                     modifier = Modifier
@@ -884,7 +876,7 @@ fun CartItemRow(
                     .background(BrandPrimaryContainer.copy(alpha = 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = productEmoji(item.product.name), fontSize = 22.sp)
+                Text(text = productEmoji(item.product.name, item.product.category), fontSize = 22.sp)
             }
 
             Spacer(modifier = Modifier.width(12.dp))

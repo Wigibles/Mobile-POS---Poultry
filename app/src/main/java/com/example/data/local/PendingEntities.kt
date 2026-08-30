@@ -166,3 +166,28 @@ data class PendingSheetEntry(
     @ColumnInfo(name = "synced_at")
     val syncedAt: Long? = null
 )
+
+@Entity(
+    tableName = "pending_operational_expenses",
+    indices = [Index(value = ["synced_at"], name = "idx_pending_oe_synced")]
+)
+data class PendingOperationalExpenseEntity(
+    @PrimaryKey(autoGenerate = true)
+    val localId: Long = 0,
+
+    @ColumnInfo(name = "title")
+    val title: String,
+
+    @ColumnInfo(name = "amount")
+    val amount: Double,
+
+    @ColumnInfo(name = "note")
+    val note: String?,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "synced_at")
+    val syncedAt: Long? = null
+)
+

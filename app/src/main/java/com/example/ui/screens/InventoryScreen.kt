@@ -67,6 +67,7 @@ fun InventoryScreen(
     var editingProductId by remember { mutableStateOf(0) }
     var nameInput by remember { mutableStateOf("") }
     var categoryInput by remember { mutableStateOf("") }
+    var supplyCountInput by remember { mutableStateOf("") }
 
     // Nested pricing variations state. The first row is always the "base" package that
     // anchors price suggestions for every other row — see PackageDraft/pricing helpers below.
@@ -78,6 +79,7 @@ fun InventoryScreen(
         editingProductId = 0
         nameInput = ""
         categoryInput = categories.firstOrNull()?.name ?: "Feeds"
+        supplyCountInput = ""
         variationOptions.clear()
         variationOptions.add(PackageDraft(name = "per Kilo", price = "45", size = "1")) // base package
         showForm = true
@@ -87,6 +89,7 @@ fun InventoryScreen(
         editingProductId = product.id
         nameInput = product.name
         categoryInput = product.category
+        supplyCountInput = product.supplyCount?.let { formatDraftNumber(it) } ?: ""
 
         variationOptions.clear()
         val prodVars = variations.filter { it.productId == product.id }
@@ -378,6 +381,23 @@ fun InventoryScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        OutlinedTextField(
+                            value = supplyCountInput,
+                            onValueChange = { supplyCountInput = it },
+                            label = { Text("Supply count (Optional)") },
+                            placeholder = { Text("e.g. 100", color = TextMuted.copy(alpha = 0.6f)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
+                            shape = ShapeSM,
+                            colors = formFieldColors(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("form_product_supply_count")
+                        )
+
                         // Pricing & Package Options — size-first, price-suggested. The first
                         // card is the base package; every other package's price auto-fills
                         // from its size × base price, and stays editable at any time.
@@ -658,10 +678,13 @@ fun InventoryScreen(
                                     return@Button
                                 }
 
+                                val finalSupplyCount = supplyCountInput.trim().toDoubleOrNull()
+
                                 viewModel.saveProduct(
                                     id = editingProductId,
                                     name = finalName,
                                     category = finalCategory,
+                                    supplyCount = finalSupplyCount,
                                     variationsList = validVariations
                                 ) {
                                     showForm = false
@@ -768,7 +791,7 @@ fun InventoryProductRow(
                 modifier = Modifier.size(46.dp).clip(ShapeSM).background(BrandPrimaryContainer.copy(alpha = 0.6f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = productEmoji(product.name), fontSize = 24.sp)
+                Text(text = productEmoji(product.name, product.category), fontSize = 24.sp)
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -786,11 +809,23 @@ fun InventoryProductRow(
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(3.dp))
-                Text(
-                    text = product.category,
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp),
-                    modifier = Modifier.clip(ShapeXS).background(SurfaceContainer).padding(horizontal = 6.dp, vertical = 2.dp)
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = product.category,
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp),
+                        modifier = Modifier.clip(ShapeXS).background(SurfaceContainer).padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                    if (product.supplyCount != null) {
+                        Text(
+                            text = "Supply: ${formatDraftNumber(product.supplyCount)}",
+                            style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp),
+                            modifier = Modifier.clip(ShapeXS).background(SurfaceContainer).padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.width(8.dp))

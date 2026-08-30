@@ -90,9 +90,9 @@ service cloud.firestore {
 
     match /cash_outs/{id} {
       allow read: if true;
-      allow write: if request.resource.data.keys().hasAll(['id','cashierName','amount','timestamp'])
+      allow write: if request.resource.data.keys().hasAll(['id','amount','timestamp'])
                    && isNum(request.resource.data.id)
-                   && isStr(request.resource.data.cashierName)
+                   && (!('cashierName' in request.resource.data) || isStr(request.resource.data.cashierName))
                    && isNum(request.resource.data.amount)
                    && isNum(request.resource.data.timestamp);
       allow delete: if true;
@@ -103,6 +103,16 @@ service cloud.firestore {
       allow write: if request.resource.data.keys().hasAll(['id','borrowerName','amount','timestamp'])
                    && isNum(request.resource.data.id)
                    && isStr(request.resource.data.borrowerName)
+                   && isNum(request.resource.data.amount)
+                   && isNum(request.resource.data.timestamp);
+      allow delete: if true;
+    }
+
+    match /operational_expenses/{id} {
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['id','title','amount','timestamp'])
+                   && isNum(request.resource.data.id)
+                   && isStr(request.resource.data.title)
                    && isNum(request.resource.data.amount)
                    && isNum(request.resource.data.timestamp);
       allow delete: if true;
