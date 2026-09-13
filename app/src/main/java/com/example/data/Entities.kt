@@ -4,7 +4,8 @@ data class Product(
     val id: Int = 0,
     val name: String,
     val category: String,
-    val supplyCount: Double? = null
+    val supplyCount: Double? = null,
+    val imageUri: String? = null
 )
 
 data class ProductVariation(

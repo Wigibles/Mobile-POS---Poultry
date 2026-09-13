@@ -12,8 +12,12 @@ import java.util.*
 data class CartItem(
     val product: Product,
     val variation: ProductVariation,
-    val quantity: Double
-)
+    val quantity: Double,
+    val customPrice: Double? = null
+) {
+    val unitPrice: Double get() = customPrice ?: variation.price
+    val lineTotal: Double get() = unitPrice * quantity
+}
 
 class POSViewModel(
     private val repository: FirestorePOSRepository,
@@ -287,15 +291,50 @@ class POSViewModel(
     }
 
     // Cart Management
-    fun addToCart(product: Product, variation: ProductVariation, quantity: Double) {
+    fun addToCart(
+        product: Product,
+        variation: ProductVariation,
+        quantity: Double,
+        customPrice: Double? = null
+    ) {
         val currentList = _cartItems.value.toMutableList()
-        val index = currentList.indexOfFirst { it.product.id == product.id && it.variation.id == variation.id }
+        val index = currentList.indexOfFirst {
+            it.product.id == product.id && it.variation.id == variation.id && it.customPrice == customPrice
+        }
         if (index != -1) {
             val existing = currentList[index]
             currentList[index] = existing.copy(quantity = existing.quantity + quantity)
         } else {
-            currentList.add(CartItem(product, variation, quantity))
+            currentList.add(CartItem(product, variation, quantity, customPrice))
         }
+        _cartItems.value = currentList
+    }
+
+    fun updateCartItemQuantity(item: CartItem, newQuantity: Double) {
+        if (newQuantity <= 0.0) {
+            removeCartItem(item)
+            return
+        }
+        val currentList = _cartItems.value.toMutableList()
+        val index = currentList.indexOfFirst { it == item }
+        if (index != -1) {
+            currentList[index] = currentList[index].copy(quantity = newQuantity)
+            _cartItems.value = currentList
+        }
+    }
+
+    fun updateCartItemPrice(item: CartItem, newPrice: Double?) {
+        val currentList = _cartItems.value.toMutableList()
+        val index = currentList.indexOfFirst { it == item }
+        if (index != -1) {
+            currentList[index] = currentList[index].copy(customPrice = newPrice)
+            _cartItems.value = currentList
+        }
+    }
+
+    fun removeCartItem(item: CartItem) {
+        val currentList = _cartItems.value.toMutableList()
+        currentList.remove(item)
         _cartItems.value = currentList
     }
 
@@ -331,7 +370,7 @@ class POSViewModel(
                 val items = _cartItems.value
                 if (items.isEmpty()) return@launch
 
-                val subtotal = items.sumOf { it.variation.price * it.quantity }.roundToCentavos()
+                val subtotal = items.sumOf { it.lineTotal }.roundToCentavos()
                 val tax = 0.0
                 val discount = 0.0
                 val total = subtotal.roundToCentavos()
@@ -350,8 +389,8 @@ class POSViewModel(
                         transactionId = 0, // will be replaced in repository
                         productId = cartItem.product.id,
                         productName = cartItem.product.name,
-                        variationName = cartItem.variation.name,
-                        price = cartItem.variation.price.roundToCentavos(),
+                        variationName = if (cartItem.customPrice != null) "${cartItem.variation.name} (Custom)" else cartItem.variation.name,
+                        price = cartItem.unitPrice.roundToCentavos(),
                         quantity = cartItem.quantity,
                         multiplier = cartItem.variation.multiplier
                     )
@@ -374,6 +413,7 @@ class POSViewModel(
         name: String,
         category: String,
         supplyCount: Double? = null,
+        imageUri: String? = null,
         variationsList: List<ProductVariation>,
         onSuccess: () -> Unit
     ) {
@@ -385,7 +425,8 @@ class POSViewModel(
                     id = id,
                     name = name,
                     category = category,
-                    supplyCount = supplyCount
+                    supplyCount = supplyCount,
+                    imageUri = imageUri
                 )
                 if (id == 0) {
                     repository.insertProduct(product, variationsList)
@@ -1035,7 +1076,13 @@ data class OperationalCycleSummary(
     val netBalance: Double,
     val recoveryRate: Double,
     val isActive: Boolean
-)
+) {
+    val storeExpense: Double get() = expense.amount
+    val grossProfit: Double get() = (periodSalesTotal - storeExpense).roundToCentavos()
+    val netGain: Double get() = netBalance
+    val isProfitable: Boolean get() = netGain >= 0.0
+    val profitMargin: Double get() = if (periodSalesTotal > 0) ((netGain / periodSalesTotal) * 100.0).roundToCentavos() else 0.0
+}
 
 private data class HistoryFilterCriteria(
     val horizon: TimeHorizon = TimeHorizon.ALL,

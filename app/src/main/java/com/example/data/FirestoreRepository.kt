@@ -971,7 +971,8 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
             id = getLong("id")?.toInt() ?: return null,
             name = getString("name") ?: "",
             category = getString("category") ?: "",
-            supplyCount = getDouble("supplyCount") ?: getLong("supplyCount")?.toDouble()
+            supplyCount = getDouble("supplyCount") ?: getLong("supplyCount")?.toDouble(),
+            imageUri = getString("imageUri")
         )
     } catch (e: Exception) {
         Log.w(TAG, "Skipping malformed product ${id}", e); null
@@ -979,7 +980,7 @@ private fun com.google.firebase.firestore.DocumentSnapshot.toProduct(): Product?
 }
 
 private fun Product.toMap(): Map<String, Any?> = mapOf(
-    "id" to id, "name" to name, "category" to category, "supplyCount" to supplyCount
+    "id" to id, "name" to name, "category" to category, "supplyCount" to supplyCount, "imageUri" to imageUri
 )
 
 private fun com.google.firebase.firestore.DocumentSnapshot.toVariation(): ProductVariation? {

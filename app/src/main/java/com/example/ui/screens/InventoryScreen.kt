@@ -1,7 +1,13 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -33,10 +40,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import coil.compose.AsyncImage
 import com.example.data.Product
 import com.example.data.ProductVariation
 import com.example.ui.theme.*
 import com.example.viewmodel.POSViewModel
+import java.io.File
 import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.abs
@@ -68,6 +77,20 @@ fun InventoryScreen(
     var nameInput by remember { mutableStateOf("") }
     var categoryInput by remember { mutableStateOf("") }
     var supplyCountInput by remember { mutableStateOf("") }
+    var imageUriInput by remember { mutableStateOf<String?>(null) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val saved = saveImageToInternalStorage(context, uri)
+            if (saved != null) {
+                imageUriInput = saved
+            } else {
+                Toast.makeText(context, "Could not save photo", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     // Nested pricing variations state. The first row is always the "base" package that
     // anchors price suggestions for every other row — see PackageDraft/pricing helpers below.
@@ -80,6 +103,7 @@ fun InventoryScreen(
         nameInput = ""
         categoryInput = categories.firstOrNull()?.name ?: "Feeds"
         supplyCountInput = ""
+        imageUriInput = null
         variationOptions.clear()
         variationOptions.add(PackageDraft(name = "per Kilo", price = "45", size = "1")) // base package
         showForm = true
@@ -90,6 +114,7 @@ fun InventoryScreen(
         nameInput = product.name
         categoryInput = product.category
         supplyCountInput = product.supplyCount?.let { formatDraftNumber(it) } ?: ""
+        imageUriInput = product.imageUri
 
         variationOptions.clear()
         val prodVars = variations.filter { it.productId == product.id }
@@ -289,323 +314,446 @@ fun InventoryScreen(
         )
     }
 
-    // ── PRODUCT ADD/EDIT FORM — sectioned, with per-package cards ──
+    // ── PRODUCT ADD/EDIT FORM — enterprise modal bottom sheet with photo upload ──
+    val productSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     if (showForm) {
-        Dialog(onDismissRequest = { showForm = false }) {
-            Card(
+        ModalBottomSheet(
+            onDismissRequest = { showForm = false },
+            sheetState = productSheetState,
+            containerColor = SurfaceLight,
+            dragHandle = { BottomSheetDefaults.DragHandle() },
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        ) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(if (LocalConfiguration.current.screenHeightDp < 700) 0.95f else 0.88f)
-                    .padding(4.dp),
-                shape = ShapeLG,
-                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                    .imePadding()
             ) {
-                Column(
+                // Header Row
+                Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Header
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = if (editingProductId == 0) "New Product" else "Edit Product",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = TextDark)
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black, color = TextDark)
                         )
-                        IconButton(onClick = { showForm = false }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close")
+                        Text(
+                            text = if (editingProductId == 0) "Create inventory item with image & pricing tiers" else "Modify catalog details and packaging options",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
+                        )
+                    }
+                    IconButton(onClick = { showForm = false }) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
+                    }
+                }
+
+                HorizontalDivider(color = BorderLight, modifier = Modifier.padding(top = 4.dp))
+
+                // Scrollable Form Body
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 14.dp)
+                ) {
+                    // ── PRODUCT IMAGE SECTION ──
+                    FormSectionLabel("PRODUCT IMAGE")
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(SurfaceContainer)
+                                .border(1.dp, BorderLight, RoundedCornerShape(12.dp))
+                                .clickable {
+                                    photoPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (!imageUriInput.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = imageUriInput,
+                                    contentDescription = "Product Image",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                    modifier = Modifier.padding(4.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.AddPhotoAlternate,
+                                        contentDescription = "Add Photo",
+                                        tint = BrandPrimary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        "Add Photo",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = BrandPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 9.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (imageUriInput != null) "Product photo set" else "No image chosen",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = "Shown on POS cards & inventory list",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = ShapeXS,
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(if (imageUriInput != null) "Change" else "Choose", fontSize = 12.sp)
+                                }
+
+                                if (imageUriInput != null) {
+                                    OutlinedButton(
+                                        onClick = { imageUriInput = null },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        shape = ShapeXS,
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ColorUnpaid),
+                                        border = BorderStroke(1.dp, ColorUnpaid.copy(alpha = 0.5f)),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Remove", fontSize = 12.sp)
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    HorizontalDivider(color = BorderLight, modifier = Modifier.padding(vertical = 10.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // Form Body with vertical scrolling
-                    Column(
+                    // ── BASICS / PRODUCT DETAILS ──
+                    FormSectionLabel("PRODUCT INFORMATION")
+
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text("Product name *") },
+                        placeholder = { Text("e.g. Broiler Grower Feeds", color = TextMuted.copy(alpha = 0.6f)) },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark, fontWeight = FontWeight.SemiBold),
+                        shape = ShapeSM,
+                        colors = formFieldColors(),
                         modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
+                            .fillMaxWidth()
+                            .testTag("form_product_name")
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Category Selection
+                    Text("Category *", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        FormSectionLabel("BASICS")
-
-                        OutlinedTextField(
-                            value = nameInput,
-                            onValueChange = { nameInput = it },
-                            label = { Text("Product name") },
-                            placeholder = { Text("e.g. Broiler Grower Feeds", color = TextMuted.copy(alpha = 0.6f)) },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
-                            shape = ShapeSM,
-                            colors = formFieldColors(),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("form_product_name")
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Category — tap an existing chip or type a new one
-                        Text("Category", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                        Spacer(modifier = Modifier.height(6.dp))
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(categories) { cat ->
-                                val isSelected = categoryInput.equals(cat.name, ignoreCase = true)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { categoryInput = cat.name },
-                                    label = { Text(cat.name, fontSize = 13.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = BrandPrimary,
-                                        selectedLabelColor = Color.White,
-                                        containerColor = SurfaceContainer,
-                                        labelColor = TextDark
-                                    )
+                        items(categories) { cat ->
+                            val isSelected = categoryInput.equals(cat.name, ignoreCase = true)
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = if (isSelected) BrandPrimary else SurfaceContainer,
+                                border = BorderStroke(1.dp, if (isSelected) BrandPrimary else BorderLight),
+                                modifier = Modifier.clickable { categoryInput = cat.name }
+                            ) {
+                                Text(
+                                    text = cat.name,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) Color.White else TextDark,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        OutlinedTextField(
-                            value = if (categories.any { it.name.equals(categoryInput, ignoreCase = true) }) "" else categoryInput,
-                            onValueChange = { categoryInput = it.trim() },
-                            placeholder = { Text("Or type a new category…", color = TextMuted.copy(alpha = 0.6f)) },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
-                            shape = ShapeXS,
-                            colors = formFieldColors(),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = if (categories.any { it.name.equals(categoryInput, ignoreCase = true) }) "" else categoryInput,
+                        onValueChange = { categoryInput = it.trim() },
+                        placeholder = { Text("Or type a new category…", color = TextMuted.copy(alpha = 0.6f)) },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
+                        shape = ShapeXS,
+                        colors = formFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                        OutlinedTextField(
-                            value = supplyCountInput,
-                            onValueChange = { supplyCountInput = it },
-                            label = { Text("Supply count (Optional)") },
-                            placeholder = { Text("e.g. 100", color = TextMuted.copy(alpha = 0.6f)) },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
-                            shape = ShapeSM,
-                            colors = formFieldColors(),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("form_product_supply_count")
-                        )
+                    OutlinedTextField(
+                        value = supplyCountInput,
+                        onValueChange = { supplyCountInput = it },
+                        label = { Text("Supply count (Optional)") },
+                        placeholder = { Text("e.g. 100", color = TextMuted.copy(alpha = 0.6f)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark),
+                        shape = ShapeSM,
+                        colors = formFieldColors(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("form_product_supply_count")
+                    )
 
-                        // Pricing & Package Options — size-first, price-suggested. The first
-                        // card is the base package; every other package's price auto-fills
-                        // from its size × base price, and stays editable at any time.
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    // ── PRICING & PACKAGES ──
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        FormSectionLabel("PRICING & PACKAGES")
+                        TextButton(
+                            onClick = { variationOptions.add(PackageDraft(priceManual = false)) },
+                            colors = ButtonDefaults.textButtonColors(contentColor = BrandPrimary),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                FormSectionLabel("PRICING & PACKAGES")
-                            }
-                            TextButton(
-                                onClick = { variationOptions.add(PackageDraft(priceManual = false)) },
-                                colors = ButtonDefaults.textButtonColors(contentColor = BrandPrimary),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Icon(Icons.Default.AddCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Add", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                            Icon(Icons.Default.AddCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Add Package", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                        }
+                    }
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = BrandPrimaryContainer.copy(alpha = 0.35f)),
+                        shape = ShapeSM,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
+                    ) {
+                        Text(
+                            text = "💡 The first package anchors your base unit price. Additional packages (e.g. bulk sacks, retail fractions) suggest their prices automatically.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = BrandPrimaryDark, fontSize = 11.sp, lineHeight = 15.sp),
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+
+                    if (variationOptions.isEmpty()) {
+                        Text(
+                            text = "Add at least one package option (e.g., per Kilo at ₱45, 50kg Bag at ₱2,100).",
+                            style = MaterialTheme.typography.bodySmall.copy(color = ColorUnpaid),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    } else {
+                        val basePrice = variationOptions.getOrNull(0)?.price?.toDoubleOrNull()
+
+                        fun recomputeDependents(newBasePrice: Double?) {
+                            if (newBasePrice == null) return
+                            for (i in 1 until variationOptions.size) {
+                                val row = variationOptions[i]
+                                if (row.priceManual) continue
+                                val size = row.size.toDoubleOrNull() ?: continue
+                                variationOptions[i] = row.copy(price = formatDraftNumber(size * newBasePrice))
                             }
                         }
-                        Text(
-                            text = "The first package sets your base price. Every other package suggests its own price automatically — override anytime.",
-                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp),
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
 
-                        if (variationOptions.isEmpty()) {
-                            Text(
-                                text = "Add at least one package option (e.g., per Kilo at ₱45, 50kg Bag at ₱2,100).",
-                                style = MaterialTheme.typography.bodySmall.copy(color = ColorUnpaid),
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        } else {
-                            val basePrice = variationOptions.getOrNull(0)?.price?.toDoubleOrNull()
-
-                            fun recomputeDependents(newBasePrice: Double?) {
-                                if (newBasePrice == null) return
-                                for (i in 1 until variationOptions.size) {
-                                    val row = variationOptions[i]
-                                    if (row.priceManual) continue
-                                    val size = row.size.toDoubleOrNull() ?: continue
-                                    variationOptions[i] = row.copy(price = formatDraftNumber(size * newBasePrice))
-                                }
-                            }
-
-                            Column(
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                variationOptions.forEachIndexed { index, draft ->
-                                    val isBase = index == 0
-                                    Card(
-                                        colors = CardDefaults.cardColors(containerColor = SurfaceContainer.copy(alpha = 0.6f)),
-                                        shape = ShapeSM,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            variationOptions.forEachIndexed { index, draft ->
+                                val isBase = index == 0
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isBase) SurfaceLight else SurfaceContainer.copy(alpha = 0.6f)
+                                    ),
+                                    border = BorderStroke(1.dp, if (isBase) BrandPrimary.copy(alpha = 0.5f) else BorderLight),
+                                    shape = ShapeSM,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             if (isBase) {
-                                                StatusPill(text = "BASE PACKAGE", color = BrandPrimary, showDot = false, fontSize = 10.sp)
-                                                Spacer(modifier = Modifier.height(6.dp))
+                                                StatusPill(text = "BASE UNIT (1x)", color = BrandPrimary, showDot = false, fontSize = 10.sp)
+                                            } else {
+                                                StatusPill(text = "TIER #${index + 1}", color = TextMuted, showDot = false, fontSize = 10.sp)
                                             }
+
+                                            // Only show delete button for non-base packages (anchors base package)
+                                            if (!isBase) {
+                                                IconButton(
+                                                    onClick = { variationOptions.removeAt(index) },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.DeleteOutline,
+                                                        contentDescription = "Remove Option",
+                                                        tint = ColorUnpaid,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        OutlinedTextField(
+                                            value = draft.name,
+                                            onValueChange = { newVal -> variationOptions[index] = draft.copy(name = newVal) },
+                                            label = { Text(if (isBase) "Base Package Name (e.g. Per Kilo)" else "Package Name (e.g. 50kg Bag)") },
+                                            placeholder = { Text(if (isBase) "per Kilo" else "50kg Bag", color = TextMuted.copy(alpha = 0.6f)) },
+                                            singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontWeight = FontWeight.Bold),
+                                            shape = ShapeXS,
+                                            colors = formFieldColors(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("variation_name_$index")
+                                        )
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        if (isBase) {
+                                            OutlinedTextField(
+                                                value = draft.price,
+                                                onValueChange = { newVal ->
+                                                    variationOptions[index] = draft.copy(price = newVal)
+                                                    recomputeDependents(newVal.toDoubleOrNull())
+                                                },
+                                                label = { Text("Base Unit Price (₱)") },
+                                                placeholder = { Text("45", color = TextMuted.copy(alpha = 0.6f)) },
+                                                supportingText = if (variationOptions.size > 1) {
+                                                    { Text("Other package tiers calculate suggested prices from this", fontSize = 10.sp, color = TextMuted) }
+                                                } else null,
+                                                prefix = { Text("₱ ", fontWeight = FontWeight.Bold, color = BrandPrimary) },
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextDark, fontWeight = FontWeight.Bold),
+                                                shape = ShapeXS,
+                                                colors = formFieldColors(),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("variation_price_$index")
+                                            )
+                                        } else {
+                                            val size = draft.size.toDoubleOrNull()
+                                            val actualPrice = draft.price.toDoubleOrNull()
+                                            val linearPrice = if (basePrice != null && size != null) size * basePrice else null
+                                            val diffPct = if (linearPrice != null && linearPrice > 0 && actualPrice != null)
+                                                (actualPrice - linearPrice) / linearPrice * 100 else null
+                                            val canReset = draft.priceManual && basePrice != null && size != null
 
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                verticalAlignment = Alignment.CenterVertically
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
                                                 OutlinedTextField(
-                                                    value = draft.name,
-                                                    onValueChange = { newVal -> variationOptions[index] = draft.copy(name = newVal) },
-                                                    label = { Text("Package name") },
-                                                    placeholder = { Text("per Kilo", color = TextMuted.copy(alpha = 0.6f)) },
-                                                    singleLine = true,
-                                                    textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
-                                                    shape = ShapeXS,
-                                                    colors = formFieldColors(),
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .testTag("variation_name_$index")
-                                                )
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                IconButton(
-                                                    onClick = {
-                                                        if (variationOptions.size > 1) {
-                                                            variationOptions.removeAt(index)
-                                                        } else {
-                                                            Toast.makeText(context, "Must have at least 1 pricing option!", Toast.LENGTH_SHORT).show()
+                                                    value = draft.size,
+                                                    onValueChange = { newVal ->
+                                                        val updated = draft.copy(size = newVal)
+                                                        variationOptions[index] = updated
+                                                        if (!draft.priceManual) {
+                                                            val newSize = newVal.toDoubleOrNull()
+                                                            if (basePrice != null && newSize != null) {
+                                                                variationOptions[index] = updated.copy(price = formatDraftNumber(newSize * basePrice))
+                                                            }
                                                         }
                                                     },
-                                                    modifier = Modifier.size(40.dp)
-                                                ) {
-                                                    Icon(Icons.Default.RemoveCircle, contentDescription = "Remove Option", tint = ColorUnpaid, modifier = Modifier.size(20.dp))
-                                                }
-                                            }
-
-                                            Spacer(modifier = Modifier.height(6.dp))
-
-                                            if (isBase) {
-                                                // The base package has no size of its own (it IS the
-                                                // unit everything else is measured against).
-                                                OutlinedTextField(
-                                                    value = draft.price,
-                                                    onValueChange = { newVal ->
-                                                        variationOptions[index] = draft.copy(price = newVal)
-                                                        recomputeDependents(newVal.toDoubleOrNull())
-                                                    },
-                                                    label = { Text("Price ₱") },
-                                                    placeholder = { Text("45", color = TextMuted.copy(alpha = 0.6f)) },
-                                                    supportingText = if (variationOptions.size > 1) {
-                                                        { Text("Other packages price themselves from this", fontSize = 10.sp, color = TextMuted) }
-                                                    } else null,
+                                                    label = { Text("Unit multiplier") },
+                                                    placeholder = { Text("e.g. 50", color = TextMuted.copy(alpha = 0.6f)) },
+                                                    supportingText = { Text("= ${draft.size.ifBlank { "?" }} base units", fontSize = 10.sp, color = TextMuted) },
                                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                                     singleLine = true,
                                                     textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
                                                     shape = ShapeXS,
                                                     colors = formFieldColors(),
                                                     modifier = Modifier
-                                                        .fillMaxWidth()
+                                                        .weight(1f)
+                                                        .testTag("variation_multiplier_$index")
+                                                )
+                                                OutlinedTextField(
+                                                    value = draft.price,
+                                                    onValueChange = { newVal ->
+                                                        variationOptions[index] = draft.copy(price = newVal, priceManual = true)
+                                                    },
+                                                    label = { Text("Price (₱)") },
+                                                    placeholder = { Text("auto", color = TextMuted.copy(alpha = 0.6f)) },
+                                                    prefix = { Text("₱ ", fontWeight = FontWeight.Bold, color = BrandPrimary) },
+                                                    trailingIcon = if (canReset) {
+                                                        {
+                                                            IconButton(
+                                                                onClick = {
+                                                                    variationOptions[index] = draft.copy(
+                                                                        price = formatDraftNumber(size!! * basePrice!!),
+                                                                        priceManual = false
+                                                                    )
+                                                                },
+                                                                modifier = Modifier.size(32.dp)
+                                                            ) {
+                                                                Icon(Icons.Default.Restore, contentDescription = "Reset to suggested price", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                                            }
+                                                        }
+                                                    } else null,
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                    singleLine = true,
+                                                    textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontWeight = FontWeight.Bold),
+                                                    shape = ShapeXS,
+                                                    colors = formFieldColors(),
+                                                    modifier = Modifier
+                                                        .weight(1.4f)
                                                         .testTag("variation_price_$index")
                                                 )
-                                            } else {
-                                                val size = draft.size.toDoubleOrNull()
-                                                val actualPrice = draft.price.toDoubleOrNull()
-                                                val linearPrice = if (basePrice != null && size != null) size * basePrice else null
-                                                val diffPct = if (linearPrice != null && linearPrice > 0 && actualPrice != null)
-                                                    (actualPrice - linearPrice) / linearPrice * 100 else null
-                                                val canReset = draft.priceManual && basePrice != null && size != null
+                                            }
 
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                ) {
-                                                    OutlinedTextField(
-                                                        value = draft.size,
-                                                        onValueChange = { newVal ->
-                                                            val updated = draft.copy(size = newVal)
-                                                            variationOptions[index] = updated
-                                                            if (!draft.priceManual) {
-                                                                val newSize = newVal.toDoubleOrNull()
-                                                                if (basePrice != null && newSize != null) {
-                                                                    variationOptions[index] = updated.copy(price = formatDraftNumber(newSize * basePrice))
-                                                                }
-                                                            }
-                                                        },
-                                                        label = { Text("Package size") },
-                                                        placeholder = { Text("e.g. 50", color = TextMuted.copy(alpha = 0.6f)) },
-                                                        supportingText = { Text("= ${draft.size.ifBlank { "?" }} base units", fontSize = 10.sp, color = TextMuted) },
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                                        singleLine = true,
-                                                        textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
-                                                        shape = ShapeXS,
-                                                        colors = formFieldColors(),
-                                                        modifier = Modifier
-                                                            .weight(1f)
-                                                            .testTag("variation_multiplier_$index")
+                                            if (diffPct != null && abs(diffPct) >= 1.0) {
+                                                Spacer(modifier = Modifier.height(6.dp))
+                                                val isDiscount = diffPct < 0
+                                                val badgeColor = if (isDiscount) ColorPaid else ColorLowStockText
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(
+                                                        if (isDiscount) Icons.AutoMirrored.Filled.TrendingDown else Icons.AutoMirrored.Filled.TrendingUp,
+                                                        contentDescription = null,
+                                                        tint = badgeColor,
+                                                        modifier = Modifier.size(14.dp)
                                                     )
-                                                    OutlinedTextField(
-                                                        value = draft.price,
-                                                        onValueChange = { newVal ->
-                                                            variationOptions[index] = draft.copy(price = newVal, priceManual = true)
-                                                        },
-                                                        label = { Text("Price ₱") },
-                                                        placeholder = { Text("auto", color = TextMuted.copy(alpha = 0.6f)) },
-                                                        trailingIcon = if (canReset) {
-                                                            {
-                                                                IconButton(
-                                                                    onClick = {
-                                                                        variationOptions[index] = draft.copy(
-                                                                            price = formatDraftNumber(size!! * basePrice!!),
-                                                                            priceManual = false
-                                                                        )
-                                                                    },
-                                                                    modifier = Modifier.size(32.dp)
-                                                                ) {
-                                                                    Icon(Icons.Default.Restore, contentDescription = "Reset to suggested price", tint = TextMuted, modifier = Modifier.size(16.dp))
-                                                                }
-                                                            }
-                                                        } else null,
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                                        singleLine = true,
-                                                        textStyle = MaterialTheme.typography.bodySmall.copy(color = TextDark),
-                                                        shape = ShapeXS,
-                                                        colors = formFieldColors(),
-                                                        modifier = Modifier
-                                                            .weight(1.4f)
-                                                            .testTag("variation_price_$index")
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = "${abs(diffPct).roundToInt()}% ${if (isDiscount) "bulk discount" else "markup"} vs base — ${formatPeso(currencyFormatter, linearPrice!!)} linear",
+                                                        style = MaterialTheme.typography.labelSmall.copy(color = badgeColor, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
                                                     )
-                                                }
-
-                                                // Live sanity-check badge — only appears when the
-                                                // price genuinely deviates from straight-line pricing,
-                                                // so a typo like ₱1750→₱175 is visible immediately.
-                                                if (diffPct != null && abs(diffPct) >= 1.0) {
-                                                    Spacer(modifier = Modifier.height(6.dp))
-                                                    val isDiscount = diffPct < 0
-                                                    val badgeColor = if (isDiscount) ColorPaid else ColorLowStockText
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Icon(
-                                                            if (isDiscount) Icons.AutoMirrored.Filled.TrendingDown else Icons.AutoMirrored.Filled.TrendingUp,
-                                                            contentDescription = null,
-                                                            tint = badgeColor,
-                                                            modifier = Modifier.size(14.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Text(
-                                                            text = "${abs(diffPct).roundToInt()}% ${if (isDiscount) "bulk discount" else "markup"} vs base — ${formatPeso(currencyFormatter, linearPrice!!)} would be linear",
-                                                            style = MaterialTheme.typography.labelSmall.copy(color = badgeColor, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
-                                                        )
-                                                    }
                                                 }
                                             }
                                         }
@@ -613,36 +761,50 @@ fun InventoryScreen(
                                 }
                             }
                         }
+                    }
 
-                        // Delete lives inside the editor, away from the everyday list.
-                        if (editingProductId != 0) {
-                            Spacer(modifier = Modifier.height(20.dp))
-                            HorizontalDivider(color = BorderLight)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            TextButton(
-                                onClick = { productToDelete = products.find { it.id == editingProductId } },
-                                colors = ButtonDefaults.textButtonColors(contentColor = ColorUnpaid),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Delete this product", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            }
+                    // Delete product option (when editing)
+                    if (editingProductId != 0) {
+                        Spacer(modifier = Modifier.height(20.dp))
+                        HorizontalDivider(color = BorderLight)
+                        Spacer(modifier = Modifier.height(10.dp))
+                        TextButton(
+                            onClick = { productToDelete = products.find { it.id == editingProductId } },
+                            colors = ButtonDefaults.textButtonColors(contentColor = ColorUnpaid),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Delete this product from catalog", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    // Extra clearance so sticky bottom bar never obscures the last package or fields
+                    Spacer(modifier = Modifier.height(36.dp))
+                }
 
-                    // Form Action Buttons
+                // Sticky Bottom Action Bar
+                Surface(
+                    color = SurfaceLight,
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp,
+                    border = BorderStroke(1.dp, BorderLight),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(
+                        OutlinedButton(
                             onClick = { showForm = false },
-                            modifier = Modifier.weight(1f).height(48.dp)
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            shape = ShapeMD
                         ) {
-                            Text("Cancel", color = TextDark, fontWeight = FontWeight.Medium)
+                            Text("Cancel", color = TextDark, fontWeight = FontWeight.SemiBold)
                         }
 
                         Button(
@@ -659,12 +821,10 @@ fun InventoryScreen(
                                 val validVariations = variationOptions.mapIndexedNotNull { idx, draft ->
                                     val vName = draft.name.trim()
                                     val vPrice = draft.price.toDoubleOrNull()
-                                    // The base package (index 0) is always ×1 by definition —
-                                    // its size field isn't shown, so never trust stray data in it.
                                     val vMultiplier = if (idx == 0) 1.0 else (draft.size.toDoubleOrNull() ?: 1.0).coerceAtLeast(0.01)
                                     if (vName.isNotEmpty() && vPrice != null && vPrice >= 0.0) {
                                         ProductVariation(
-                                            id = 0, // database auto-assigns
+                                            id = 0,
                                             productId = editingProductId,
                                             name = vName,
                                             price = vPrice,
@@ -685,6 +845,7 @@ fun InventoryScreen(
                                     name = finalName,
                                     category = finalCategory,
                                     supplyCount = finalSupplyCount,
+                                    imageUri = imageUriInput,
                                     variationsList = validVariations
                                 ) {
                                     showForm = false
@@ -696,13 +857,19 @@ fun InventoryScreen(
                                 disabledContainerColor = BrandPrimary.copy(alpha = 0.5f)
                             ),
                             enabled = !isSaving,
-                            shape = ShapeSM,
+                            shape = ShapeMD,
                             modifier = Modifier
                                 .weight(1.5f)
                                 .height(48.dp)
                                 .testTag("save_product_button")
                         ) {
-                            Text(if (isSaving) "Saving…" else "Save Product", color = Color.White, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (isSaving) "Saving…" else if (editingProductId == 0) "Save Product" else "Update Product",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -791,7 +958,16 @@ fun InventoryProductRow(
                 modifier = Modifier.size(46.dp).clip(ShapeSM).background(BrandPrimaryContainer.copy(alpha = 0.6f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = productEmoji(product.name, product.category), fontSize = 24.sp)
+                if (!product.imageUri.isNullOrBlank()) {
+                    AsyncImage(
+                        model = product.imageUri,
+                        contentDescription = product.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(text = productEmoji(product.name, product.category), fontSize = 24.sp)
+                }
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -831,5 +1007,21 @@ fun InventoryProductRow(
             Spacer(modifier = Modifier.width(8.dp))
             Icon(Icons.Default.ChevronRight, contentDescription = "Edit", tint = TextMuted.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
         }
+    }
+}
+
+/** Copies a picked image to local app storage for permanent, offline persistence. */
+private fun saveImageToInternalStorage(context: android.content.Context, uri: Uri): String? {
+    return try {
+        val imagesDir = File(context.filesDir, "product_images").apply { if (!exists()) mkdirs() }
+        val destFile = File(imagesDir, "prod_${System.currentTimeMillis()}.jpg")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            destFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        destFile.absolutePath
+    } catch (e: Exception) {
+        null
     }
 }

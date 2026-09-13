@@ -38,6 +38,8 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -402,7 +404,7 @@ fun DashboardScreen(
 private fun StaggeredFadeSlide(
     visible: Boolean,
     delayMs: Int = 0,
-    content: @Composable () -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
     val show by animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
@@ -423,7 +425,9 @@ private fun StaggeredFadeSlide(
                     initialOffsetY = { it / 2 }
                 )
     ) {
-        content()
+        Column(modifier = Modifier.fillMaxWidth()) {
+            content()
+        }
     }
 }
 
@@ -838,12 +842,21 @@ private fun ProductSnapshotCard(product: Product) {
             ) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(10.dp))
                         .background(BrandPrimaryContainer),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(text = productEmoji(product.name, product.category), fontSize = 22.sp)
+                    if (!product.imageUri.isNullOrBlank()) {
+                        AsyncImage(
+                            model = product.imageUri,
+                            contentDescription = product.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Text(text = productEmoji(product.name, product.category), fontSize = 22.sp)
+                    }
                 }
             }
 

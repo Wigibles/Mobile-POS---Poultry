@@ -27,7 +27,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -37,14 +39,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import coil.compose.AsyncImage
 import com.example.data.Product
 import com.example.data.ProductVariation
 import com.example.ui.theme.*
@@ -118,7 +123,7 @@ fun POSScreen(
     }
 
     val cartCount = cartItems.sumOf { it.quantity }
-    val cartTotal = cartItems.sumOf { it.variation.price * it.quantity }
+    val cartTotal = cartItems.sumOf { it.lineTotal }
 
     BoxWithConstraints(
         modifier = modifier.fillMaxSize().background(BackgroundLight)
@@ -326,7 +331,7 @@ fun POSScreen(
     // CART BOTTOM SHEET (swipe up / tap the floating pill)
     // ═══════════════════════════════════════════
     if (showCartSheet) {
-        val subtotal = cartItems.sumOf { it.variation.price * it.quantity }
+        val subtotal = cartItems.sumOf { it.lineTotal }
         val totalAmount = subtotal
 
         ModalBottomSheet(
@@ -356,10 +361,11 @@ fun POSScreen(
                                 item = item,
                                 canIncrease = true,
                                 onQtyIncrease = {
-                                    viewModel.updateCartQuantity(item.product, item.variation, item.quantity + 1.0)
+                                    viewModel.updateCartItemQuantity(item, item.quantity + 1.0)
                                 },
-                                onQtyDecrease = { viewModel.updateCartQuantity(item.product, item.variation, item.quantity - 1.0) },
-                                onRemove = { viewModel.removeFromCart(item.product, item.variation) }
+                                onQtyDecrease = { viewModel.updateCartItemQuantity(item, item.quantity - 1.0) },
+                                onRemove = { viewModel.removeCartItem(item) },
+                                onEditPrice = { newPrice -> viewModel.updateCartItemPrice(item, newPrice) }
                             )
                         }
                     }
@@ -416,6 +422,8 @@ fun POSScreen(
         val productVars = variations.filter { it.productId == product.id }
         var selectedVar by remember(product.id) { mutableStateOf(productVars.firstOrNull()) }
         var qty by remember(product.id) { mutableStateOf(1.0) }
+        var isCustomPriceEnabled by remember(product.id, selectedVar?.id) { mutableStateOf(false) }
+        var customPriceInput by remember(product.id, selectedVar?.id) { mutableStateOf("") }
 
         ModalBottomSheet(
             onDismissRequest = { variantSheetProduct = null },
@@ -423,14 +431,83 @@ fun POSScreen(
             containerColor = SurfaceLight,
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
         ) {
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Select Package", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, color = TextDark))
-                    IconButton(onClick = { variantSheetProduct = null }) { Icon(Icons.Default.Close, "Close") }
+                    IconButton(onClick = { variantSheetProduct = null }) { Icon(Icons.Default.Close, "Close", tint = TextMuted) }
                 }
-                Text(product.name, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = BrandPrimary))
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(6.dp))
+
+                // Product Preview Header Card
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SurfaceContainer.copy(alpha = 0.5f)),
+                    shape = ShapeSM,
+                    border = BorderStroke(1.dp, BorderLight),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(BrandPrimaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (!product.imageUri.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = product.imageUri,
+                                    contentDescription = product.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Text(text = productEmoji(product.name, product.category), fontSize = 24.sp)
+                            }
+                        }
+
+                        Spacer(Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = product.name,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextDark
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                StatusPill(
+                                    text = product.category,
+                                    color = BrandPrimary,
+                                    showDot = false,
+                                    fontSize = 11.sp
+                                )
+                                if (product.supplyCount != null) {
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "${product.supplyCount.toInt()} in stock",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = if (product.supplyCount <= 5.0) ColorUnpaid else TextMuted,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
 
                 // Selector cards — filled brand color when picked, with a check badge,
                 // instead of a plain radio row. Reads faster at a glance from arm's length.
@@ -438,7 +515,7 @@ fun POSScreen(
                     val isSelected = selectedVar?.id == variation.id
                     // Selecting a different package resets quantity — a leftover qty from
                     // a small-multiplier package is not a safe default for a bigger one.
-                    val selectThis = { selectedVar = variation; qty = 1.0 }
+                    val selectThis = { selectedVar = variation; qty = 1.0; isCustomPriceEnabled = false; customPriceInput = "" }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(ShapeSM)
                             .background(if (isSelected) BrandPrimary else SurfaceLight)
@@ -464,7 +541,80 @@ fun POSScreen(
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
+
+                // ── MANUAL / CUSTOM PRICE OVERRIDE ──
+                val defaultPrice = selectedVar?.price ?: 0.0
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isCustomPriceEnabled) SurfaceLight else SurfaceContainer.copy(alpha = 0.5f)
+                    ),
+                    shape = ShapeSM,
+                    border = BorderStroke(1.dp, if (isCustomPriceEnabled) BrandPrimary.copy(alpha = 0.5f) else BorderLight),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = null,
+                                    tint = if (isCustomPriceEnabled) BrandPrimary else TextMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "Custom / Manual Price",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isCustomPriceEnabled) BrandPrimary else TextDark
+                                    )
+                                )
+                            }
+                            Switch(
+                                checked = isCustomPriceEnabled,
+                                onCheckedChange = { checked ->
+                                    isCustomPriceEnabled = checked
+                                    if (checked && customPriceInput.isBlank()) {
+                                        customPriceInput = if (defaultPrice == defaultPrice.toLong().toDouble()) defaultPrice.toLong().toString() else String.format("%.2f", defaultPrice)
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = BrandPrimary)
+                            )
+                        }
+
+                        if (isCustomPriceEnabled) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = customPriceInput,
+                                onValueChange = { customPriceInput = it },
+                                label = { Text("Manual Unit Price (₱)") },
+                                placeholder = { Text(defaultPrice.toString()) },
+                                prefix = { Text("₱ ", fontWeight = FontWeight.Bold, color = BrandPrimary) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold, color = TextDark),
+                                shape = ShapeSM,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = BrandPrimary,
+                                    unfocusedBorderColor = BorderLight
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Standard catalog price: ${formatPeso(currencyFormatter, defaultPrice)}",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
 
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Quantity:", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
@@ -477,16 +627,39 @@ fun POSScreen(
 
                 Spacer(Modifier.height(20.dp))
 
-                Button(onClick = {
-                    selectedVar?.let { viewModel.addToCart(product, it, qty) }
-                    variantSheetProduct = null
-                }, enabled = selectedVar != null,
+                val activeUnitPrice = if (isCustomPriceEnabled) {
+                    customPriceInput.toDoubleOrNull() ?: defaultPrice
+                } else {
+                    selectedVar?.price ?: 0.0
+                }
+                val totalComputed = activeUnitPrice * qty
+
+                Button(
+                    onClick = {
+                        selectedVar?.let {
+                            val parsedCustomPrice = if (isCustomPriceEnabled) customPriceInput.toDoubleOrNull() else null
+                            viewModel.addToCart(product, it, qty, parsedCustomPrice)
+                        }
+                        variantSheetProduct = null
+                    },
+                    enabled = selectedVar != null,
                     colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
-                    shape = ShapeSM, modifier = Modifier.fillMaxWidth().height(52.dp)
+                    shape = ShapeSM,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
                 ) {
+                    Icon(
+                        Icons.Default.AddShoppingCart,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        "Add to Cart",
-                        color = Color.White, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        "Add to Cart • ${formatPeso(currencyFormatter, totalComputed)}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
 
@@ -499,7 +672,7 @@ fun POSScreen(
     // TRANSACTION CONFIRMATION DIALOG
     // ═══════════════════════════════════════
     if (showConfirmationDialog) {
-        val finalTotal = cartItems.sumOf { it.variation.price * it.quantity }
+        val finalTotal = cartItems.sumOf { it.lineTotal }
         val statusColor = if (confirmationStatus == "PAID") ColorPaid else ColorUnpaid
 
         Dialog(onDismissRequest = { showConfirmationDialog = false }) {
@@ -797,7 +970,16 @@ fun POSProductCard(
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                     .background(SurfaceContainer)
             ) {
-                Text(text = productEmoji(product.name, product.category), fontSize = 32.sp, modifier = Modifier.align(Alignment.Center))
+                if (!product.imageUri.isNullOrBlank()) {
+                    AsyncImage(
+                        model = product.imageUri,
+                        contentDescription = product.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(text = productEmoji(product.name, product.category), fontSize = 32.sp, modifier = Modifier.align(Alignment.Center))
+                }
 
                 Box(
                     modifier = Modifier
@@ -853,9 +1035,14 @@ fun CartItemRow(
     onQtyIncrease: () -> Unit,
     onQtyDecrease: () -> Unit,
     onRemove: () -> Unit,
+    onEditPrice: ((Double?) -> Unit)? = null,
     canIncrease: Boolean = true
 ) {
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-PH"))
+    var showEditPriceDialog by remember { mutableStateOf(false) }
+    var manualPriceText by remember(item.unitPrice) {
+        mutableStateOf(if (item.unitPrice == item.unitPrice.toLong().toDouble()) item.unitPrice.toLong().toString() else String.format("%.2f", item.unitPrice))
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth().shadow(elevation = 2.dp, shape = ShapeMD, clip = false),
@@ -876,7 +1063,16 @@ fun CartItemRow(
                     .background(BrandPrimaryContainer.copy(alpha = 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = productEmoji(item.product.name, item.product.category), fontSize = 22.sp)
+                if (!item.product.imageUri.isNullOrBlank()) {
+                    AsyncImage(
+                        model = item.product.imageUri,
+                        contentDescription = item.product.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(text = productEmoji(item.product.name, item.product.category), fontSize = 22.sp)
+                }
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -894,15 +1090,40 @@ fun CartItemRow(
                     text = item.variation.name,
                     style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
                 )
-                Text(
-                    text = formatPeso(currencyFormatter, item.variation.price),
-                    style = MaterialTheme.typography.bodySmall.copy(color = BrandPrimary, fontWeight = FontWeight.Bold)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { showEditPriceDialog = true }
+                ) {
+                    Text(
+                        text = formatPeso(currencyFormatter, item.unitPrice),
+                        style = MaterialTheme.typography.bodySmall.copy(color = BrandPrimary, fontWeight = FontWeight.Bold)
+                    )
+                    if (item.customPrice != null) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "CUSTOM",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = BrandPrimary,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 9.sp
+                            ),
+                            modifier = Modifier
+                                .clip(ShapeXS)
+                                .background(BrandPrimaryContainer)
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Edit price",
+                        tint = TextMuted.copy(alpha = 0.6f),
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
 
-            // Quantity stepper — 40dp targets so it's tappable at speed; when quantity is 1
-            // the minus becomes a delete (trash) affordance so removal is a deliberate,
-            // separate gesture instead of a tiny red button 8dp from "+".
+            // Quantity stepper
             val isLastUnit = item.quantity <= 1.0
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -934,6 +1155,78 @@ fun CartItemRow(
                     modifier = Modifier.size(40.dp)
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Increase quantity", tint = if (canIncrease) TextDark else TextMuted.copy(alpha = 0.4f), modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+    }
+
+    if (showEditPriceDialog) {
+        Dialog(onDismissRequest = { showEditPriceDialog = false }) {
+            Card(
+                shape = ShapeMD,
+                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text(
+                        "Edit Price: ${item.product.name}",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                    )
+                    Text(
+                        "Standard catalog price: ${formatPeso(currencyFormatter, item.variation.price)}",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = manualPriceText,
+                        onValueChange = { manualPriceText = it },
+                        label = { Text("Custom Unit Price (₱)") },
+                        prefix = { Text("₱ ", fontWeight = FontWeight.Bold, color = BrandPrimary) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        shape = ShapeSM,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BrandPrimary,
+                            unfocusedBorderColor = BorderLight
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (item.customPrice != null) {
+                            TextButton(
+                                onClick = {
+                                    onEditPrice?.invoke(null)
+                                    showEditPriceDialog = false
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Reset", color = ColorUnpaid)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { showEditPriceDialog = false },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cancel", color = TextDark)
+                        }
+                        Button(
+                            onClick = {
+                                val parsed = manualPriceText.toDoubleOrNull()
+                                if (parsed != null && parsed >= 0) {
+                                    onEditPrice?.invoke(parsed)
+                                }
+                                showEditPriceDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Apply", color = Color.White)
+                        }
+                    }
                 }
             }
         }
