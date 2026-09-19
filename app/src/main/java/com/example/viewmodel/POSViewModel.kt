@@ -188,6 +188,9 @@ class POSViewModel(
             _editingProduct.value = null
             clearHistoryFilters()
             _cashLogDateFilter.value = null
+            _operationalHorizon.value = TimeHorizon.ALL
+            _operationalCustomStartDate.value = null
+            _operationalCustomEndDate.value = null
         }
     }
 
@@ -267,6 +270,22 @@ class POSViewModel(
             TimeHorizon.MTD -> _chartPeriod.value = "MTD"
             else -> {}
         }
+    }
+
+    // Store Operational Time Horizon & Date Filter state
+    private val _operationalHorizon = MutableStateFlow(TimeHorizon.ALL)
+    val operationalHorizon: StateFlow<TimeHorizon> = _operationalHorizon.asStateFlow()
+
+    private val _operationalCustomStartDate = MutableStateFlow<String?>(null)
+    val operationalCustomStartDate: StateFlow<String?> = _operationalCustomStartDate.asStateFlow()
+
+    private val _operationalCustomEndDate = MutableStateFlow<String?>(null)
+    val operationalCustomEndDate: StateFlow<String?> = _operationalCustomEndDate.asStateFlow()
+
+    fun setOperationalFilter(horizon: TimeHorizon, startDate: String? = null, endDate: String? = null) {
+        _operationalHorizon.value = horizon
+        _operationalCustomStartDate.value = startDate
+        _operationalCustomEndDate.value = endDate ?: startDate
     }
 
     // Product form state (for adding/editing products)
@@ -1006,8 +1025,8 @@ class POSViewModel(
     )
 
     // Dynamic Store Operational Cycles:
-    // When a store expense (e.g. ₱10,000 delivery) is logged, it calculates period sales and employee expenses
-    // from that timestamp up to the next logged store expense (or now if ongoing).
+    // Computes capital-recovery cycles per OperationalExpense (supply/batch purchase),
+    // tracking whether sales covered store expenses and employee wages up until the next purchase.
     val operationalCycles: StateFlow<List<OperationalCycleSummary>> = combine(
         operationalExpenses,
         transactions,
@@ -1025,21 +1044,21 @@ class POSViewModel(
             val isActive = (i == n - 1)
 
             val cycleTxs = txList.filter { tx ->
-                tx.status != "VOIDED" &&
-                tx.timestamp >= startTime &&
-                (endTime == null || tx.timestamp < endTime)
+                if (tx.status != "PAID") return@filter false
+                val effectiveTime = tx.settledTimestamp ?: tx.timestamp
+                effectiveTime >= startTime && (endTime == null || effectiveTime < endTime)
             }
-            val periodSales = cycleTxs.sumOf { it.totalAmount }
+            val periodSales = cycleTxs.sumOf { it.totalAmount }.roundToCentavos()
             val periodOrders = cycleTxs.size
 
             val periodEmpExpenses = cashList.filter { co ->
                 co.timestamp >= startTime &&
                 (endTime == null || co.timestamp < endTime)
-            }.sumOf { it.amount }
+            }.sumOf { it.amount }.roundToCentavos()
 
             val totalCost = (curr.amount + periodEmpExpenses).roundToCentavos()
             val net = (periodSales - totalCost).roundToCentavos()
-            val recoveryRate = if (totalCost > 0) (periodSales / totalCost) * 100.0 else 100.0
+            val recoveryRate = if (totalCost > 0) ((periodSales / totalCost) * 100.0).roundToCentavos() else 100.0
 
             summaries.add(
                 OperationalCycleSummary(
@@ -1063,6 +1082,178 @@ class POSViewModel(
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
     )
+
+    // Capital Recovery Aggregate Rollup:
+    // Provides headline metrics across all capital-recovery cycles, distinguishing
+    // the single ongoing cycle from closed historical cycles.
+    val capitalRecoveryOverview: StateFlow<CapitalRecoveryOverview> = operationalCycles.map { cycles ->
+        val netProfit = cycles.sumOf { it.netBalance }.roundToCentavos()
+        val activeCycle = cycles.firstOrNull { it.isActive }
+        val closedCycles = cycles.filterNot { it.isActive }
+        val closedDeficits = closedCycles.filter { it.netBalance < 0.0 }
+
+        CapitalRecoveryOverview(
+            totalNetProfit = netProfit,
+            isOverallProfitable = netProfit >= 0.0,
+            activeCycleOutstanding = activeCycle?.let { if (it.netBalance < 0.0) -it.netBalance else 0.0 }?.roundToCentavos() ?: 0.0,
+            activeCycleRecoveryRate = activeCycle?.recoveryRate ?: 100.0,
+            historicalUnrecoveredCount = closedDeficits.size,
+            historicalUnrecoveredTotal = closedDeficits.sumOf { -it.netBalance }.roundToCentavos(),
+            totalCycles = cycles.size
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = CapitalRecoveryOverview(0.0, true, 0.0, 100.0, 0, 0.0, 0)
+    )
+
+    // ── Continuous Store Operational P&L Tracker ──
+    // Does NOT reset cycles when a store expense is logged. Aggregates all store expenses, employee expenses,
+    // and sales within the selected date horizon/custom range, broken down daily and summarized.
+    private val operationalFilterCriteria: Flow<OperationalFilterCriteria> = combine(
+        _operationalHorizon,
+        _operationalCustomStartDate,
+        _operationalCustomEndDate
+    ) { horizon, start, end ->
+        OperationalFilterCriteria(horizon, start, end)
+    }
+
+    val operationalReport: StateFlow<OperationalReportSummary> = combine(
+        operationalExpenses,
+        transactions,
+        cashOutEntries,
+        operationalFilterCriteria
+    ) { opList, txList, cashList, criteria ->
+        val boundary = getTimeHorizonBoundary(criteria.horizon, criteria.startDate, criteria.endDate)
+        val start = boundary.startTimestamp
+        val end = boundary.endTimestamp
+        val rangeLabel = boundary.displayLabel
+
+        val periodTxs = txList.filter { it.status != "VOIDED" && it.timestamp in start..end }
+        val periodOpExpenses = opList.filter { it.timestamp in start..end }
+        val periodCashOuts = cashList.filter { it.timestamp in start..end }
+
+        val totalSales = periodTxs.sumOf { it.totalAmount }.roundToCentavos()
+        val totalStoreExpenses = periodOpExpenses.sumOf { it.amount }.roundToCentavos()
+        val totalEmployeeExpenses = periodCashOuts.sumOf { it.amount }.roundToCentavos()
+        val totalExpenses = (totalStoreExpenses + totalEmployeeExpenses).roundToCentavos()
+        val netProfit = (totalSales - totalExpenses).roundToCentavos()
+        val isProfitable = netProfit >= 0.0
+        val profitMargin = if (totalSales > 0) ((netProfit / totalSales) * 100.0).roundToCentavos() else 0.0
+        val recoveryRate = if (totalExpenses > 0) ((totalSales / totalExpenses) * 100.0).roundToCentavos() else 100.0
+        val totalOrders = periodTxs.size
+
+        val sdfDateKey = shopDateFormat("yyyy-MM-dd")
+        val sdfDisplayDate = shopDateFormat("MMM d, yyyy")
+
+        val activeDates = mutableSetOf<String>()
+        if (criteria.horizon == TimeHorizon.DAY) {
+            activeDates.add(sdfDateKey.format(Date(System.currentTimeMillis())))
+        }
+        periodTxs.forEach { activeDates.add(sdfDateKey.format(Date(it.timestamp))) }
+        periodOpExpenses.forEach { activeDates.add(sdfDateKey.format(Date(it.timestamp))) }
+        periodCashOuts.forEach { activeDates.add(sdfDateKey.format(Date(it.timestamp))) }
+
+        val dailyList = activeDates.sortedDescending().map { dateKey ->
+            val dayTxs = periodTxs.filter { sdfDateKey.format(Date(it.timestamp)) == dateKey }
+            val dayOp = periodOpExpenses.filter { sdfDateKey.format(Date(it.timestamp)) == dateKey }
+            val dayCash = periodCashOuts.filter { sdfDateKey.format(Date(it.timestamp)) == dateKey }
+
+            val daySales = dayTxs.sumOf { it.totalAmount }.roundToCentavos()
+            val dayStoreExp = dayOp.sumOf { it.amount }.roundToCentavos()
+            val dayEmpExp = dayCash.sumOf { it.amount }.roundToCentavos()
+            val dayTotalExp = (dayStoreExp + dayEmpExp).roundToCentavos()
+            val dayNet = (daySales - dayTotalExp).roundToCentavos()
+
+            val parsedTime = try { sdfDateKey.parse(dateKey)?.time } catch (_: Exception) { null }
+            val sampleTimestamp = dayTxs.firstOrNull()?.timestamp
+                ?: dayOp.firstOrNull()?.timestamp
+                ?: dayCash.firstOrNull()?.timestamp
+                ?: parsedTime
+                ?: System.currentTimeMillis()
+
+            val displayDate = sdfDisplayDate.format(Date(sampleTimestamp))
+
+            OperationalDailySummary(
+                dateString = dateKey,
+                displayDate = displayDate,
+                timestamp = sampleTimestamp,
+                storeExpense = dayStoreExp,
+                employeeExpense = dayEmpExp,
+                totalExpense = dayTotalExp,
+                sales = daySales,
+                netProfit = dayNet,
+                isProfitable = dayNet >= 0.0,
+                orderCount = dayTxs.size,
+                storeExpenses = dayOp.sortedByDescending { it.timestamp },
+                employeeExpenses = dayCash.sortedByDescending { it.timestamp }
+            )
+        }
+
+        OperationalReportSummary(
+            rangeLabel = rangeLabel,
+            totalSales = totalSales,
+            totalStoreExpenses = totalStoreExpenses,
+            totalEmployeeExpenses = totalEmployeeExpenses,
+            totalExpenses = totalExpenses,
+            netProfit = netProfit,
+            isProfitable = isProfitable,
+            profitMargin = profitMargin,
+            recoveryRate = recoveryRate,
+            totalOrders = totalOrders,
+            dailySummaries = dailyList,
+            filteredStoreExpenses = periodOpExpenses.sortedByDescending { it.timestamp }
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = OperationalReportSummary()
+    )
+}
+
+data class OperationalFilterCriteria(
+    val horizon: TimeHorizon = TimeHorizon.ALL,
+    val startDate: String? = null,
+    val endDate: String? = null
+)
+
+data class OperationalDailySummary(
+    val dateString: String,
+    val displayDate: String,
+    val timestamp: Long,
+    val storeExpense: Double,
+    val employeeExpense: Double,
+    val totalExpense: Double,
+    val sales: Double,
+    val netProfit: Double,
+    val isProfitable: Boolean,
+    val orderCount: Int,
+    val storeExpenses: List<OperationalExpense>,
+    val employeeExpenses: List<CashOutEntry>
+) {
+    val status: String get() = when {
+        netProfit > 0.0 -> "Profit"
+        netProfit == 0.0 && (sales > 0 || totalExpense > 0) -> "Break-Even"
+        sales == 0.0 && totalExpense == 0.0 -> "No Activity"
+        else -> "Deficit"
+    }
+}
+
+data class OperationalReportSummary(
+    val rangeLabel: String = "All Time",
+    val totalSales: Double = 0.0,
+    val totalStoreExpenses: Double = 0.0,
+    val totalEmployeeExpenses: Double = 0.0,
+    val totalExpenses: Double = 0.0,
+    val netProfit: Double = 0.0,
+    val isProfitable: Boolean = true,
+    val profitMargin: Double = 0.0,
+    val recoveryRate: Double = 100.0,
+    val totalOrders: Int = 0,
+    val dailySummaries: List<OperationalDailySummary> = emptyList(),
+    val filteredStoreExpenses: List<OperationalExpense> = emptyList()
+) {
+    val remainingToBreakEven: Double get() = if (netProfit < 0) kotlin.math.abs(netProfit).roundToCentavos() else 0.0
 }
 
 data class OperationalCycleSummary(
@@ -1083,6 +1274,16 @@ data class OperationalCycleSummary(
     val isProfitable: Boolean get() = netGain >= 0.0
     val profitMargin: Double get() = if (periodSalesTotal > 0) ((netGain / periodSalesTotal) * 100.0).roundToCentavos() else 0.0
 }
+
+data class CapitalRecoveryOverview(
+    val totalNetProfit: Double,          // sum of netBalance across ALL cycles (closed + active) — the headline number
+    val isOverallProfitable: Boolean,    // totalNetProfit >= 0.0 — drives the headline color/status
+    val activeCycleOutstanding: Double,  // deficit of the current/ongoing cycle ONLY, 0.0 if it's already recovered or there is none
+    val activeCycleRecoveryRate: Double, // recoveryRate of the current/ongoing cycle, 100.0 if none
+    val historicalUnrecoveredCount: Int, // count of CLOSED cycles that ended in deficit — informational, not "pending"
+    val historicalUnrecoveredTotal: Double, // sum of those closed deficits — a fixed, final number, framed as sunk cost
+    val totalCycles: Int
+)
 
 private data class HistoryFilterCriteria(
     val horizon: TimeHorizon = TimeHorizon.ALL,

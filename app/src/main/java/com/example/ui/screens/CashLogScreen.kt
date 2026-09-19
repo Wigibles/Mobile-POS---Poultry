@@ -3,8 +3,10 @@ package com.example.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,9 +33,13 @@ import androidx.compose.ui.unit.sp
 import com.example.data.CashOutEntry
 import com.example.data.OperationalExpense
 import com.example.data.Role
+import com.example.data.TimeHorizon
 import com.example.data.shopDateFormat
 import com.example.ui.theme.*
+import com.example.viewmodel.CapitalRecoveryOverview
 import com.example.viewmodel.OperationalCycleSummary
+import com.example.viewmodel.OperationalDailySummary
+import com.example.viewmodel.OperationalReportSummary
 import com.example.viewmodel.POSViewModel
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
@@ -52,8 +58,13 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
     val isSavingExpense by viewModel.isSavingCashOut.collectAsState()
 
     // ── Store Operational state ──
-    val operationalCycles by viewModel.operationalCycles.collectAsState()
+    val operationalReport by viewModel.operationalReport.collectAsState()
+    val operationalHorizon by viewModel.operationalHorizon.collectAsState()
+    val operationalCustomStartDate by viewModel.operationalCustomStartDate.collectAsState()
+    val operationalCustomEndDate by viewModel.operationalCustomEndDate.collectAsState()
     val isSavingOperational by viewModel.isSavingOperationalExpense.collectAsState()
+    val operationalCycles by viewModel.operationalCycles.collectAsState()
+    val capitalRecoveryOverview by viewModel.capitalRecoveryOverview.collectAsState()
 
     val currentRole by viewModel.currentRole.collectAsState()
     val currentCashierName by viewModel.currentCashierName.collectAsState()
@@ -75,6 +86,9 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
         override fun isSelectableYear(year: Int): Boolean = true
     })
 
+    var showOperationalDateRangePicker by remember { mutableStateOf(false) }
+    val operationalDateRangePickerState = rememberDateRangePickerState()
+
     var showEntryForm by remember { mutableStateOf(false) }
     var editingEntry by remember { mutableStateOf<CashOutEntry?>(null) }
     var entryToDelete by remember { mutableStateOf<CashOutEntry?>(null) }
@@ -82,7 +96,9 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
     var showOperationalForm by remember { mutableStateOf(false) }
     var editingOperationalEntry by remember { mutableStateOf<OperationalExpense?>(null) }
     var operationalEntryToDelete by remember { mutableStateOf<OperationalExpense?>(null) }
-    var selectedCycleForBreakdown by remember { mutableStateOf<OperationalCycleSummary?>(null) }
+
+    var showPeriodBreakdown by remember { mutableStateOf(false) }
+    var showAllCycles by remember { mutableStateOf(false) }
 
     fun canModify(entry: CashOutEntry) =
         isAdmin || (currentRole == Role.CASHIER && entry.cashierName == currentCashierName)
@@ -229,83 +245,276 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
                 }
             } else {
                 // ── STORE OPERATIONAL TAB ──
-                if (operationalCycles.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(24.dp), contentAlignment = Alignment.Center) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                LazyColumn(
+                    modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 100.dp)
+                ) {
+                    // 1. All-Time Headline: Capital Recovery Overview Hero Card
+                    item {
+                        CapitalRecoveryHeroCard(
+                            overview = capitalRecoveryOverview,
+                            currencyFormatter = currencyFormatter
+                        )
+                    }
+
+                    // 2. Collapsible Period Breakdown Toggle
+                    item {
+                        Surface(
+                            color = SurfaceLight,
                             shape = ShapeLG,
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(ShapeLG)
+                                .clickable { showPeriodBreakdown = !showPeriodBreakdown }
                         ) {
-                            Column(
-                                modifier = Modifier.padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.CalendarMonth,
+                                        contentDescription = null,
+                                        tint = BrandPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        if (showPeriodBreakdown) "Hide period breakdown" else "View by period (day / week / month)",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = BrandPrimary
+                                        )
+                                    )
+                                }
+                                Icon(
+                                    if (showPeriodBreakdown) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = BrandPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (showPeriodBreakdown) {
+                        // Date Horizon Filter Bar
+                        item {
+                            OperationalDateFilterBar(
+                                selectedHorizon = operationalHorizon,
+                                customStartDate = operationalCustomStartDate,
+                                customEndDate = operationalCustomEndDate,
+                                rangeLabel = operationalReport.rangeLabel,
+                                dateOnlyFormat = dateOnlyFormat,
+                                onSelectHorizon = { horizon ->
+                                    viewModel.setOperationalFilter(horizon)
+                                },
+                                onPickCustomRange = {
+                                    showOperationalDateRangePicker = true
+                                },
+                                onClearFilter = {
+                                    viewModel.setOperationalFilter(TimeHorizon.ALL)
+                                }
+                            )
+                        }
+
+                        // Filtered Period Profitability Hero Card
+                        item {
+                            OperationalHeroCard(
+                                report = operationalReport,
+                                currencyFormatter = currencyFormatter
+                            )
+                        }
+
+                        // 4-Pill Summary KPI Cards
+                        item {
+                            OperationalSummaryTiles(
+                                report = operationalReport,
+                                currencyFormatter = currencyFormatter
+                            )
+                        }
+                    }
+
+                    // 3. Purchase-by-Purchase Breakdown Section
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Purchase-by-Purchase Breakdown",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                            )
+                            Surface(
+                                color = SurfaceContainer,
+                                shape = ShapeXL
+                            ) {
+                                Text(
+                                    "${operationalCycles.size} purchase(s)",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, color = TextMuted),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (operationalCycles.isEmpty()) {
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                                shape = ShapeMD
                             ) {
                                 Box(
-                                    modifier = Modifier.size(64.dp).clip(ShapeXL).background(BrandPrimary.copy(alpha = 0.1f)),
+                                    modifier = Modifier.fillMaxWidth().padding(20.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(Icons.Default.LocalShipping, contentDescription = null, tint = BrandPrimary, modifier = Modifier.size(32.dp))
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(Icons.Default.Inventory, contentDescription = null, tint = TextMuted.copy(alpha = 0.4f), modifier = Modifier.size(36.dp))
+                                        Spacer(Modifier.height(8.dp))
+                                        Text("No capital cycles logged yet", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
+                                    }
                                 }
-                                Spacer(Modifier.height(16.dp))
-                                Text(
-                                    "No Store Operational Expenses",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    "Log a shipment or feeds delivery (e.g. ₱10,000 delivery on Aug 30) to automatically track and compare incoming sales against your delivery & employee costs from that point forward.",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = TextMuted),
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                                Spacer(Modifier.height(16.dp))
-                                Button(
-                                    onClick = { editingOperationalEntry = null; showOperationalForm = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
-                                    shape = ShapeSM
+                            }
+                        }
+                    } else {
+                        val visibleCycles = if (showAllCycles) operationalCycles else operationalCycles.take(5)
+                        items(visibleCycles) { cycle ->
+                            CapitalCycleCard(
+                                cycle = cycle,
+                                currencyFormatter = currencyFormatter,
+                                dateFormatter = sdf
+                            )
+                        }
+
+                        if (!showAllCycles && operationalCycles.size > 5) {
+                            item {
+                                TextButton(
+                                    onClick = { showAllCycles = true },
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Log Store Expense")
+                                    Text(
+                                        "Show all ${operationalCycles.size} purchases",
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = BrandPrimary
+                                    )
                                 }
                             }
                         }
                     }
-                } else {
-                    val activeCycle = operationalCycles.firstOrNull { it.isActive } ?: operationalCycles.first()
 
-                    LazyColumn(
-                        modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(top = 6.dp, bottom = 128.dp)
-                    ) {
-                        // ── Active Cycle Hero Overview ──
-                        item {
-                            ActiveCycleHeroCard(
-                                cycle = activeCycle,
-                                currencyFormatter = currencyFormatter,
-                                dateSpanFormat = dateSpanFormat,
-                                onViewBreakdown = { selectedCycleForBreakdown = activeCycle }
-                            )
-                        }
-
-                        item {
+                    // 4. Daily Operations Ledger Table Title & Badge
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                "Delivery Cycles & Break-Even History",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = TextDark),
-                                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                                "Daily Operations Ledger",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
                             )
+                            Surface(
+                                color = SurfaceContainer,
+                                shape = ShapeXL
+                            ) {
+                                Text(
+                                    "${operationalReport.dailySummaries.size} active day(s)",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, color = TextMuted),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
                         }
+                    }
 
-                        // ── All Cycles Breakdown List ──
-                        items(operationalCycles) { cycle ->
-                            OperationalCycleCard(
-                                cycle = cycle,
+                    // 5. Daily Ledger Table
+                    item {
+                        OperationalDailyTable(
+                            dailySummaries = operationalReport.dailySummaries,
+                            currencyFormatter = currencyFormatter,
+                            onEditExpense = { exp ->
+                                editingOperationalEntry = exp
+                                showOperationalForm = true
+                            },
+                            onDeleteExpense = { exp ->
+                                operationalEntryToDelete = exp
+                            }
+                        )
+                    }
+
+                    // 6. Store Operational Expenses Header
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Store Operational Expenses",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                            )
+                            TextButton(
+                                onClick = {
+                                    editingOperationalEntry = null
+                                    showOperationalForm = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = BrandPrimary)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Add Expense", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = BrandPrimary)
+                            }
+                        }
+                    }
+
+                    // 7. Store Operational Expenses Item List
+                    if (operationalReport.filteredStoreExpenses.isEmpty()) {
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+                                shape = ShapeMD
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(Icons.Default.LocalShipping, contentDescription = null, tint = TextMuted.copy(alpha = 0.4f), modifier = Modifier.size(44.dp))
+                                        Spacer(Modifier.height(8.dp))
+                                        Text("No store expenses logged in this date range", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
+                                        Spacer(Modifier.height(10.dp))
+                                        Button(
+                                            onClick = { editingOperationalEntry = null; showOperationalForm = true },
+                                            colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
+                                            shape = ShapeSM
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("Log Store Expense")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        items(operationalReport.filteredStoreExpenses) { exp ->
+                            OperationalExpenseItemCard(
+                                expense = exp,
                                 currencyFormatter = currencyFormatter,
-                                dateSpanFormat = dateSpanFormat,
-                                onViewBreakdown = { selectedCycleForBreakdown = cycle },
-                                onEdit = { editingOperationalEntry = cycle.expense; showOperationalForm = true },
-                                onDelete = { operationalEntryToDelete = cycle.expense }
+                                dateFormatter = sdf,
+                                onEdit = {
+                                    editingOperationalEntry = exp
+                                    showOperationalForm = true
+                                },
+                                onDelete = {
+                                    operationalEntryToDelete = exp
+                                }
                             )
                         }
                     }
@@ -369,6 +578,42 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
         }
     }
 
+    // ── Date Range Picker Dialog for Store Operations ──
+    if (showOperationalDateRangePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showOperationalDateRangePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val startMillis = operationalDateRangePickerState.selectedStartDateMillis
+                        val endMillis = operationalDateRangePickerState.selectedEndDateMillis ?: startMillis
+                        if (startMillis != null) {
+                            val startStr = dateOnlyFormat.format(Date(startMillis))
+                            val endStr = if (endMillis != null) dateOnlyFormat.format(Date(endMillis)) else startStr
+                            viewModel.setOperationalFilter(TimeHorizon.CUSTOM, startStr, endStr)
+                        } else {
+                            viewModel.setOperationalFilter(TimeHorizon.ALL)
+                        }
+                        showOperationalDateRangePicker = false
+                    },
+                    enabled = operationalDateRangePickerState.selectedStartDateMillis != null
+                ) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.setOperationalFilter(TimeHorizon.ALL)
+                    showOperationalDateRangePicker = false
+                }) { Text("Clear") }
+            }
+        ) {
+            DateRangePicker(
+                state = operationalDateRangePickerState,
+                title = { Text("Select Date Range", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) },
+                showModeToggle = false
+            )
+        }
+    }
+
     // ── Employee Expense Add/Edit Dialog with 100 / 200 Quick Options ──
     if (showEntryForm) {
         CashOutEntryFormDialog(
@@ -414,12 +659,12 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
             entry = editingOperationalEntry,
             isSaving = isSavingOperational,
             onDismiss = { showOperationalForm = false },
-            onSave = { title, amount, note ->
+            onSave = { title, amount, note, timestamp ->
                 val target = editingOperationalEntry
                 if (target == null) {
-                    viewModel.addOperationalExpense(title, amount, note) { showOperationalForm = false }
+                    viewModel.addOperationalExpense(title, amount, note, timestamp) { showOperationalForm = false }
                 } else {
-                    viewModel.updateOperationalExpense(target, title, amount, note, target.timestamp) { showOperationalForm = false }
+                    viewModel.updateOperationalExpense(target, title, amount, note, timestamp) { showOperationalForm = false }
                 }
             }
         )
@@ -432,7 +677,7 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
             onDismissRequest = { operationalEntryToDelete = null },
             icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = ColorUnpaid, modifier = Modifier.size(36.dp)) },
             title = { Text("Delete Store Expense?", fontWeight = FontWeight.Bold) },
-            text = { Text("This will delete this store expense and re-adjust the timeline cycle calculations.") },
+            text = { Text("This will permanently delete this store expense entry.") },
             confirmButton = {
                 Button(
                     onClick = { viewModel.deleteOperationalExpense(opToDelete); operationalEntryToDelete = null },
@@ -444,195 +689,165 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
             }
         )
     }
-
-    // ── Cycle Financial Breakdown & Employee Logs Bottom Sheet ──
-    val cycleToBreakdown = selectedCycleForBreakdown
-    if (cycleToBreakdown != null) {
-        CycleBreakdownBottomSheet(
-            cycle = cycleToBreakdown,
-            allEmployeeEntries = allEntries,
-            currencyFormatter = currencyFormatter,
-            dateSpanFormat = dateSpanFormat,
-            onDismiss = { selectedCycleForBreakdown = null }
-        )
-    }
 }
 
-// ── Active Delivery Cycle Hero Card ──
+// ── Headline Capital Recovery Hero Card ──
 @Composable
-private fun ActiveCycleHeroCard(
-    cycle: OperationalCycleSummary,
-    currencyFormatter: NumberFormat,
-    dateSpanFormat: SimpleDateFormat,
-    onViewBreakdown: () -> Unit
+private fun CapitalRecoveryHeroCard(
+    overview: CapitalRecoveryOverview,
+    currencyFormatter: NumberFormat
 ) {
-    var isExpanded by remember { mutableStateOf(false) }
-    val startDateStr = dateSpanFormat.format(Date(cycle.periodStartTimestamp))
-    val isProfitable = cycle.isProfitable
+    val isProfit = overview.isOverallProfitable
+    val hasCycles = overview.totalCycles > 0
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(elevation = 4.dp, shape = ShapeXL, clip = false),
+            .shadow(elevation = 3.dp, shape = ShapeXL, clip = false),
         colors = CardDefaults.cardColors(containerColor = SurfaceLight),
         shape = ShapeXL
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
+            // Header: Status badge & All-Time tag
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    color = BrandPrimary.copy(alpha = 0.12f),
+                    color = when {
+                        !hasCycles -> SurfaceContainer
+                        isProfit -> ColorPaid.copy(alpha = 0.12f)
+                        else -> ColorUnpaid.copy(alpha = 0.12f)
+                    },
                     shape = ShapeXL
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
-                        Box(Modifier.size(8.dp).clip(ShapeXL).background(BrandPrimary))
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(ShapeXL)
+                                .background(
+                                    when {
+                                        !hasCycles -> TextMuted
+                                        isProfit -> ColorPaid
+                                        else -> ColorUnpaid
+                                    }
+                                )
+                        )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            "ACTIVE DELIVERY CYCLE",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = BrandPrimary, fontSize = 11.sp)
+                            when {
+                                !hasCycles -> "NO CAPITAL PURCHASES"
+                                isProfit -> "YOU'RE AHEAD"
+                                else -> "STILL EARNING IT BACK"
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = when {
+                                    !hasCycles -> TextMuted
+                                    isProfit -> ColorPaid
+                                    else -> ColorUnpaid
+                                },
+                                fontSize = 11.sp
+                            )
                         )
                     }
                 }
                 Text(
-                    "$startDateStr – Present",
+                    "All-Time Purchases Rollup",
                     style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.SemiBold)
                 )
             }
 
-            Spacer(Modifier.height(10.dp))
-            Text(
-                cycle.expense.title,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black, color = TextDark, fontSize = 20.sp)
-            )
+            Spacer(Modifier.height(14.dp))
 
-            Spacer(Modifier.height(12.dp))
-
-            // ── Net Profit / Balance Hero Box ──
+            // Net Profit / Deficit Highlight Surface
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = if (isProfitable) ColorPaid.copy(alpha = 0.08f) else ColorUnpaid.copy(alpha = 0.08f),
+                color = when {
+                    !hasCycles -> SurfaceContainer.copy(alpha = 0.5f)
+                    isProfit -> ColorPaid.copy(alpha = 0.08f)
+                    else -> ColorUnpaid.copy(alpha = 0.08f)
+                },
                 shape = ShapeMD
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
                         Text(
-                            if (isProfitable) "Net Profit Generated" else "Remaining to Break-Even",
+                            "Overall Net Capital Position",
                             style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Medium)
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            formatPeso(currencyFormatter, kotlin.math.abs(cycle.netBalance)),
+                            if (!hasCycles) "₱0.00"
+                            else "${if (overview.totalNetProfit > 0) "+" else ""}${formatPeso(currencyFormatter, overview.totalNetProfit)}",
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.Black,
-                                color = if (isProfitable) ColorPaid else ColorUnpaid,
-                                fontSize = 24.sp
+                                color = when {
+                                    !hasCycles -> TextDark
+                                    isProfit -> ColorPaid
+                                    else -> ColorUnpaid
+                                },
+                                fontSize = 26.sp
                             )
                         )
                     }
-                    Surface(
-                        color = if (isProfitable) ColorPaid else ColorUnpaid,
-                        shape = ShapeXL
-                    ) {
-                        Text(
-                            text = if (isProfitable) "Profitable (${cycle.recoveryRate.toInt()}%)" else "Recovering (${cycle.recoveryRate.toInt()}%)",
-                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontWeight = FontWeight.Bold),
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                }
+            }
+
+            if (hasCycles) {
+                Spacer(Modifier.height(12.dp))
+
+                // Active Cycle Recovery Progress Bar
+                LinearProgressIndicator(
+                    progress = { (overview.activeCycleRecoveryRate / 100.0).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(ShapeXL),
+                    color = if (overview.activeCycleOutstanding == 0.0) ColorPaid else BrandPrimary,
+                    trackColor = SurfaceContainer
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                // Active Cycle Sub-Line
+                val rateStr = String.format(Locale.US, "%.1f", overview.activeCycleRecoveryRate)
+                val activeSubLine = if (overview.activeCycleOutstanding > 0.0) {
+                    "Current batch: $rateStr% covered · ${formatPeso(currencyFormatter, overview.activeCycleOutstanding)} to go"
+                } else {
+                    "Current batch: $rateStr% covered · Break-even reached"
+                }
+
+                Text(
+                    text = activeSubLine,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = if (overview.activeCycleOutstanding == 0.0) ColorPaid else TextDark,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+
+                // Optional historical unrecovered footer line
+                if (overview.historicalUnrecoveredCount > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "${overview.historicalUnrecoveredCount} past purchase(s) didn't fully pay for themselves (–${formatPeso(currencyFormatter, overview.historicalUnrecoveredTotal)} total)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = TextMuted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Normal
                         )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // ── Progress Bar ──
-            val progressFraction = (cycle.recoveryRate / 100.0).toFloat().coerceIn(0f, 1f)
-            LinearProgressIndicator(
-                progress = { progressFraction },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(ShapeXL),
-                color = if (isProfitable) ColorPaid else BrandPrimary,
-                trackColor = SurfaceContainer
-            )
-
-            Spacer(Modifier.height(14.dp))
-
-            // ── Enterprise 3-Column Metrics Grid ──
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text("Feeds Delivery", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp))
-                    Spacer(Modifier.height(2.dp))
-                    Text(formatPeso(currencyFormatter, cycle.storeExpense), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Employee Logs", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp))
-                    Spacer(Modifier.height(2.dp))
-                    Text("+${formatPeso(currencyFormatter, cycle.periodEmployeeExpenses)}", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = ChartHighlight))
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("Sales Generated", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp))
-                    Spacer(Modifier.height(2.dp))
-                    Text(formatPeso(currencyFormatter, cycle.periodSalesTotal), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = ColorPaid))
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // ── Action Row: Financial Report & Chart Peek ──
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                FilledTonalButton(
-                    onClick = onViewBreakdown,
-                    shape = ShapeSM,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = BrandPrimary.copy(alpha = 0.12f),
-                        contentColor = BrandPrimary
-                    )
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Financial Report", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-
-                TextButton(
-                    onClick = { isExpanded = !isExpanded },
-                    colors = ButtonDefaults.textButtonColors(contentColor = BrandPrimary)
-                ) {
-                    Icon(Icons.Default.BarChart, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (isExpanded) "Hide Chart" else "Quick Chart", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    Icon(
-                        if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
-
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = expandVertically(),
-                exit = shrinkVertically()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                    CycleProfitabilityChart(
-                        cycle = cycle,
-                        currencyFormatter = currencyFormatter
                     )
                 }
             }
@@ -640,30 +855,630 @@ private fun ActiveCycleHeroCard(
     }
 }
 
-// ── Operational Cycle Timeline Card ──
+// ── Period Profitability Hero Card (Date-Filtered) ──
 @Composable
-private fun OperationalCycleCard(
-    cycle: OperationalCycleSummary,
-    currencyFormatter: NumberFormat,
-    dateSpanFormat: SimpleDateFormat,
-    onViewBreakdown: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit
+private fun OperationalHeroCard(
+    report: OperationalReportSummary,
+    currencyFormatter: NumberFormat
 ) {
-    var isExpanded by remember { mutableStateOf(false) }
-    val startDateStr = dateSpanFormat.format(Date(cycle.periodStartTimestamp))
-    val endDateStr = if (cycle.periodEndTimestamp != null) dateSpanFormat.format(Date(cycle.periodEndTimestamp)) else "Present"
-    val isProfitable = cycle.isProfitable
+    val isProfit = report.isProfitable
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(elevation = 2.dp, shape = ShapeMD, clip = false),
+            .shadow(elevation = 3.dp, shape = ShapeXL, clip = false),
+        colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+        shape = ShapeXL
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            // Header: Status badge & range label
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = if (isProfit) ColorPaid.copy(alpha = 0.12f) else ColorUnpaid.copy(alpha = 0.12f),
+                    shape = ShapeXL
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(ShapeXL)
+                                .background(if (isProfit) ColorPaid else ColorUnpaid)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (isProfit) "PROFIT (this period)" else "STILL RECOVERING (this period)",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (isProfit) ColorPaid else ColorUnpaid,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+                }
+                Text(
+                    report.rangeLabel,
+                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.SemiBold)
+                )
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            // Net Profit / Deficit Highlight Surface
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = if (isProfit) ColorPaid.copy(alpha = 0.08f) else ColorUnpaid.copy(alpha = 0.08f),
+                shape = ShapeMD
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            if (isProfit) "Profit this period (${report.rangeLabel})" else "Remaining to Break-Even (${report.rangeLabel})",
+                            style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Medium)
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            formatPeso(currencyFormatter, if (isProfit) report.netProfit else report.remainingToBreakEven),
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Black,
+                                color = if (isProfit) ColorPaid else ColorUnpaid,
+                                fontSize = 26.sp
+                            )
+                        )
+                    }
+                    Surface(
+                        color = if (isProfit) ColorPaid else ColorUnpaid,
+                        shape = ShapeXL
+                    ) {
+                        Text(
+                            text = if (isProfit) "Profitable (+${String.format(Locale.US, "%.1f", report.profitMargin)}%)"
+                            else "Deficit (${report.recoveryRate.toInt()}% recovered)",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontWeight = FontWeight.Bold),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Break-Even Progress Bar
+            val progressFraction = (report.recoveryRate / 100.0).toFloat().coerceIn(0f, 1f)
+            LinearProgressIndicator(
+                progress = { progressFraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(ShapeXL),
+                color = if (isProfit) ColorPaid else BrandPrimary,
+                trackColor = SurfaceContainer
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Sales: ${formatPeso(currencyFormatter, report.totalSales)}",
+                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp)
+                )
+                Text(
+                    "Total Expenses: ${formatPeso(currencyFormatter, report.totalExpenses)}",
+                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp)
+                )
+            }
+        }
+    }
+}
+
+// ── 4-Tile Financial Summary ──
+@Composable
+private fun OperationalSummaryTiles(
+    report: OperationalReportSummary,
+    currencyFormatter: NumberFormat
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Gross Sales
+            Surface(
+                modifier = Modifier.weight(1f),
+                color = ColorPaid.copy(alpha = 0.08f),
+                shape = ShapeSM
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text("Gross Sales (${report.totalOrders})", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
+                    Spacer(Modifier.height(3.dp))
+                    Text(formatPeso(currencyFormatter, report.totalSales), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = ColorPaid), maxLines = 1)
+                }
+            }
+
+            // Total Expenses
+            Surface(
+                modifier = Modifier.weight(1f),
+                color = SurfaceContainer.copy(alpha = 0.6f),
+                shape = ShapeSM
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text("Total Expenses", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
+                    Spacer(Modifier.height(3.dp))
+                    Text(formatPeso(currencyFormatter, report.totalExpenses), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark), maxLines = 1)
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Store Expenses
+            Surface(
+                modifier = Modifier.weight(1f),
+                color = BrandPrimary.copy(alpha = 0.08f),
+                shape = ShapeSM
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text("Store Expenses", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
+                    Spacer(Modifier.height(3.dp))
+                    Text(formatPeso(currencyFormatter, report.totalStoreExpenses), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = BrandPrimary), maxLines = 1)
+                }
+            }
+
+            // Employee Expenses
+            Surface(
+                modifier = Modifier.weight(1f),
+                color = ChartHighlight.copy(alpha = 0.08f),
+                shape = ShapeSM
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text("Employee Logs", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
+                    Spacer(Modifier.height(3.dp))
+                    Text(formatPeso(currencyFormatter, report.totalEmployeeExpenses), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = ChartHighlight), maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+// ── Date Horizon Filter Bar ──
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OperationalDateFilterBar(
+    selectedHorizon: TimeHorizon,
+    customStartDate: String?,
+    customEndDate: String?,
+    rangeLabel: String,
+    dateOnlyFormat: SimpleDateFormat,
+    onSelectHorizon: (TimeHorizon) -> Unit,
+    onPickCustomRange: () -> Unit,
+    onClearFilter: () -> Unit
+) {
+    val displayFmt = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
+    val isCustom = selectedHorizon == TimeHorizon.CUSTOM && customStartDate != null
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val chips = listOf(
+                TimeHorizon.ALL to "All Time",
+                TimeHorizon.DAY to "Today",
+                TimeHorizon.WEEK to "7D",
+                TimeHorizon.THIRTY_DAYS to "30D",
+                TimeHorizon.MTD to "MTD"
+            )
+
+            chips.forEach { (horizon, label) ->
+                val isSelected = selectedHorizon == horizon && !isCustom
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSelectHorizon(horizon) },
+                    label = { Text(label, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = BrandPrimary,
+                        selectedLabelColor = Color.White,
+                        containerColor = SurfaceContainer,
+                        labelColor = TextDark
+                    ),
+                    border = null,
+                    modifier = Modifier.height(30.dp)
+                )
+            }
+
+            // Custom Range Chip
+            FilterChip(
+                selected = isCustom,
+                onClick = onPickCustomRange,
+                label = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(13.dp), tint = if (isCustom) Color.White else TextMuted)
+                        Spacer(Modifier.width(4.dp))
+                        val customLabel = if (isCustom && !customStartDate.isNullOrBlank()) {
+                            val s = try { displayFmt.format(dateOnlyFormat.parse(customStartDate) ?: Date()) } catch (_: Exception) { customStartDate }
+                            val e = if (!customEndDate.isNullOrBlank() && customEndDate != customStartDate) {
+                                try { displayFmt.format(dateOnlyFormat.parse(customEndDate) ?: Date()) } catch (_: Exception) { customEndDate }
+                            } else null
+                            if (e != null) "$s – $e" else "$s"
+                        } else "Range"
+                        Text(customLabel, fontSize = 11.sp, fontWeight = if (isCustom) FontWeight.Bold else FontWeight.Normal)
+                    }
+                },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = BrandPrimary,
+                    selectedLabelColor = Color.White,
+                    containerColor = SurfaceContainer,
+                    labelColor = TextDark
+                ),
+                border = null,
+                modifier = Modifier.height(30.dp)
+            )
+
+            if (isCustom) {
+                TextButton(onClick = onClearFilter, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Text("Clear", fontSize = 11.sp, color = ColorUnpaid)
+                }
+            }
+        }
+    }
+}
+
+// ── Daily Breakdown Table ──
+@Composable
+private fun OperationalDailyTable(
+    dailySummaries: List<OperationalDailySummary>,
+    currencyFormatter: NumberFormat,
+    onEditExpense: (OperationalExpense) -> Unit,
+    onDeleteExpense: (OperationalExpense) -> Unit
+) {
+    if (dailySummaries.isEmpty()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+            shape = ShapeMD
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "No operations or sales logged in this period.",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted)
+                )
+            }
+        }
+        return
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+        shape = ShapeLG,
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Table Header Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(BrandPrimary.copy(alpha = 0.08f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Date",
+                    modifier = Modifier.weight(1.3f),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                )
+                Text(
+                    "Store Exp",
+                    modifier = Modifier.weight(1.1f),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                )
+                Text(
+                    "Emp Exp",
+                    modifier = Modifier.weight(1.1f),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                )
+                Text(
+                    "Sales",
+                    modifier = Modifier.weight(1.2f),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                )
+                Text(
+                    "Net P/L",
+                    modifier = Modifier.weight(1.3f),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                )
+            }
+            HorizontalDivider(color = BorderLight)
+
+            dailySummaries.forEachIndexed { index, summary ->
+                OperationalDailyTableRow(
+                    summary = summary,
+                    currencyFormatter = currencyFormatter,
+                    isEven = index % 2 == 0,
+                    onEditExpense = onEditExpense,
+                    onDeleteExpense = onDeleteExpense
+                )
+                if (index < dailySummaries.size - 1) {
+                    HorizontalDivider(color = BorderLight.copy(alpha = 0.5f))
+                }
+            }
+        }
+    }
+}
+
+// ── Daily Breakdown Table Row ──
+@Composable
+private fun OperationalDailyTableRow(
+    summary: OperationalDailySummary,
+    currencyFormatter: NumberFormat,
+    isEven: Boolean,
+    onEditExpense: (OperationalExpense) -> Unit,
+    onDeleteExpense: (OperationalExpense) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val isProfit = summary.isProfitable
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isEven) Color.Transparent else SurfaceContainer.copy(alpha = 0.35f))
+            .clickable { expanded = !expanded }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Date column
+            Column(modifier = Modifier.weight(1.3f)) {
+                Text(
+                    summary.displayDate,
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        summary.status,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = if (isProfit) ColorPaid else ColorUnpaid,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp
+                        )
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Icon(
+                        if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = TextMuted
+                    )
+                }
+            }
+
+            // Store Exp column
+            Text(
+                if (summary.storeExpense > 0) formatPeso(currencyFormatter, summary.storeExpense) else "—",
+                modifier = Modifier.weight(1.1f),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = if (summary.storeExpense > 0) TextDark else TextMuted,
+                    fontWeight = if (summary.storeExpense > 0) FontWeight.SemiBold else FontWeight.Normal,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    fontSize = 11.sp
+                ),
+                maxLines = 1
+            )
+
+            // Emp Exp column
+            Text(
+                if (summary.employeeExpense > 0) formatPeso(currencyFormatter, summary.employeeExpense) else "—",
+                modifier = Modifier.weight(1.1f),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = if (summary.employeeExpense > 0) ChartHighlight else TextMuted,
+                    fontWeight = if (summary.employeeExpense > 0) FontWeight.SemiBold else FontWeight.Normal,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    fontSize = 11.sp
+                ),
+                maxLines = 1
+            )
+
+            // Sales column
+            Column(modifier = Modifier.weight(1.2f), horizontalAlignment = Alignment.End) {
+                Text(
+                    formatPeso(currencyFormatter, summary.sales),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = if (summary.sales > 0) ColorPaid else TextMuted,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                        fontSize = 11.sp
+                    ),
+                    maxLines = 1
+                )
+                if (summary.orderCount > 0) {
+                    Text(
+                        "${summary.orderCount} order${if (summary.orderCount > 1) "s" else ""}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 9.sp)
+                    )
+                }
+            }
+
+            // Net P/L column
+            Column(modifier = Modifier.weight(1.3f), horizontalAlignment = Alignment.End) {
+                Text(
+                    "${if (summary.netProfit >= 0) "+" else ""}${formatPeso(currencyFormatter, summary.netProfit)}",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontWeight = FontWeight.Black,
+                        color = if (isProfit) ColorPaid else ColorUnpaid,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                        fontSize = 11.sp
+                    ),
+                    maxLines = 1
+                )
+            }
+        }
+
+        // Expandable Detail Accordion
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(),
+            exit = shrinkVertically()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(SurfaceContainer.copy(alpha = 0.5f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Breakdown for ${summary.displayDate}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                )
+
+                // Store expenses list
+                if (summary.storeExpenses.isNotEmpty()) {
+                    Text(
+                        "Store Expenses Logged (${summary.storeExpenses.size}):",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.SemiBold)
+                    )
+                    summary.storeExpenses.forEach { exp ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                                Text(exp.title, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                                if (!exp.note.isNullOrBlank()) {
+                                    Text("Note: ${exp.note}", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "-${formatPeso(currencyFormatter, exp.amount)}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = ColorUnpaid)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                IconButton(onClick = { onEditExpense(exp) }, modifier = Modifier.size(24.dp)) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit", tint = TextMuted, modifier = Modifier.size(14.dp))
+                                }
+                                IconButton(onClick = { onDeleteExpense(exp) }, modifier = Modifier.size(24.dp)) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ColorUnpaid, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Employee cash outs list
+                if (summary.employeeExpenses.isNotEmpty()) {
+                    Text(
+                        "Employee Wages & Cash-Outs (${summary.employeeExpenses.size}):",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.SemiBold)
+                    )
+                    summary.employeeExpenses.forEach { cash ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                                Text(
+                                    if (cash.cashierName.isNotBlank()) cash.cashierName else "Employee Cash Out",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                                )
+                                if (!cash.note.isNullOrBlank()) {
+                                    Text("Note: ${cash.note}", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                                }
+                            }
+                            Text(
+                                "-${formatPeso(currencyFormatter, cash.amount)}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = ChartHighlight)
+                            )
+                        }
+                    }
+                }
+
+                // Sales summary line
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Gross Sales Revenue (${summary.orderCount} orders):",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                    )
+                    Text(
+                        "+${formatPeso(currencyFormatter, summary.sales)}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = ColorPaid)
+                    )
+                }
+
+                HorizontalDivider(color = BorderLight.copy(alpha = 0.5f))
+
+                // Net Daily Profit
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (summary.netProfit >= 0) "Daily Net Profit:" else "Daily Net Deficit:",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Black, color = if (isProfit) ColorPaid else ColorUnpaid)
+                    )
+                    Text(
+                        "${if (summary.netProfit >= 0) "+" else ""}${formatPeso(currencyFormatter, summary.netProfit)}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Black, color = if (isProfit) ColorPaid else ColorUnpaid)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Itemized Store Operational Expense Card ──
+@Composable
+private fun OperationalExpenseItemCard(
+    expense: OperationalExpense,
+    currencyFormatter: NumberFormat,
+    dateFormatter: SimpleDateFormat,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(elevation = 1.dp, shape = ShapeMD, clip = false),
         colors = CardDefaults.cardColors(containerColor = SurfaceLight),
         shape = ShapeMD
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Header: Icon, Title, Date Span, Status Badge
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -672,15 +1487,102 @@ private fun OperationalCycleCard(
                 Row(modifier = Modifier.weight(1f).padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
+                            .size(34.dp)
+                            .clip(ShapeMD)
+                            .background(BrandPrimary.copy(alpha = 0.1f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.LocalShipping, contentDescription = null, tint = BrandPrimary, modifier = Modifier.size(16.dp))
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            expense.title,
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                        )
+                        Text(
+                            dateFormatter.format(Date(expense.timestamp)),
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                        )
+                    }
+                }
+
+                Text(
+                    formatPeso(currencyFormatter, expense.amount),
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Black, color = ColorUnpaid)
+                )
+            }
+
+            if (!expense.note.isNullOrBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    color = SurfaceContainer,
+                    shape = ShapeXS
+                ) {
+                    Text(
+                        "Note: ${expense.note}",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontSize = 11.sp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onEdit, colors = ButtonDefaults.textButtonColors(contentColor = BrandPrimary), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit", fontSize = 11.sp)
+                }
+                TextButton(onClick = onDelete, colors = ButtonDefaults.textButtonColors(contentColor = ColorUnpaid), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Delete", fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+// ── Capital Recovery Cycle Card ──
+@Composable
+private fun CapitalCycleCard(
+    cycle: OperationalCycleSummary,
+    currencyFormatter: NumberFormat,
+    dateFormatter: SimpleDateFormat
+) {
+    val isRecovered = cycle.netBalance >= 0.0
+    val progressFraction = (cycle.recoveryRate / 100.0).toFloat().coerceIn(0f, 1f)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(elevation = 1.dp, shape = ShapeMD, clip = false),
+        colors = CardDefaults.cardColors(containerColor = SurfaceLight),
+        shape = ShapeMD
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            // Header: Purchase icon + Title + Date + Badges
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
                             .size(36.dp)
                             .clip(ShapeMD)
-                            .background(if (cycle.isActive) BrandPrimary.copy(alpha = 0.1f) else SurfaceContainer),
+                            .background(if (cycle.isActive) BrandPrimary.copy(alpha = 0.12f) else SurfaceContainer),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            if (cycle.isActive) Icons.Default.LocalShipping else Icons.Default.Inventory2,
+                            imageVector = if (cycle.isActive) Icons.Default.Autorenew else Icons.Default.Inventory,
                             contentDescription = null,
-                            tint = if (cycle.isActive) BrandPrimary else TextMuted,
+                            tint = if (cycle.isActive) BrandPrimary else TextDark,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -688,894 +1590,116 @@ private fun OperationalCycleCard(
                     Column {
                         Text(
                             cycle.expense.title,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
                         )
                         Text(
-                            "$startDateStr – $endDateStr",
+                            dateFormatter.format(Date(cycle.expense.timestamp)),
                             style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
                         )
                     }
                 }
 
-                Surface(
-                    color = if (cycle.isActive) BrandPrimary.copy(alpha = 0.12f) else SurfaceContainer,
-                    shape = ShapeXL
-                ) {
-                    Text(
-                        text = if (cycle.isActive) "ACTIVE" else "COMPLETED",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = if (cycle.isActive) BrandPrimary else TextMuted,
-                            fontSize = 10.sp
-                        ),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
-            }
-
-            if (!cycle.expense.note.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Surface(
-                    color = SurfaceContainer.copy(alpha = 0.6f),
-                    shape = ShapeXS
-                ) {
-                    Text(
-                        cycle.expense.note,
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontSize = 11.sp),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = BorderLight)
-            Spacer(Modifier.height(12.dp))
-
-            // ── Primary 4-Metric Enterprise Tiles ──
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Feeds Delivery Tile
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    color = SurfaceContainer.copy(alpha = 0.55f),
-                    shape = ShapeSM
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text("Feeds Delivery", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
-                        Spacer(Modifier.height(3.dp))
-                        Text(formatPeso(currencyFormatter, cycle.storeExpense), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark), maxLines = 1)
-                    }
-                }
-
-                // Employee Logs Tile
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    color = ChartHighlight.copy(alpha = 0.08f),
-                    shape = ShapeSM
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text("Employee Logs", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
-                        Spacer(Modifier.height(3.dp))
-                        Text("+${formatPeso(currencyFormatter, cycle.periodEmployeeExpenses)}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark), maxLines = 1)
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Cycle Sales Tile
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    color = SurfaceContainer.copy(alpha = 0.55f),
-                    shape = ShapeSM
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text("Cycle Sales (${cycle.periodOrderCount})", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
-                        Spacer(Modifier.height(3.dp))
-                        Text(formatPeso(currencyFormatter, cycle.periodSalesTotal), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = BrandPrimary), maxLines = 1)
-                    }
-                }
-
-                // Net Gain Tile
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    color = if (isProfitable) ColorPaid.copy(alpha = 0.1f) else ColorUnpaid.copy(alpha = 0.1f),
-                    shape = ShapeSM
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(if (isProfitable) "Net Gain" else "Balance", style = MaterialTheme.typography.labelSmall.copy(color = if (isProfitable) ColorPaid else ColorUnpaid, fontSize = 10.sp, fontWeight = FontWeight.Bold), maxLines = 1)
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            "${if (isProfitable) "+" else ""}${formatPeso(currencyFormatter, cycle.netGain)}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Black, color = if (isProfitable) ColorPaid else ColorUnpaid),
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // ── Inline Chart Peek Accordion ──
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = expandVertically(),
-                exit = shrinkVertically()
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CycleProfitabilityChart(
-                        cycle = cycle,
-                        currencyFormatter = currencyFormatter
-                    )
-                }
-            }
-
-            // ── Action Bar ──
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FilledTonalButton(
-                        onClick = onViewBreakdown,
-                        shape = ShapeSM,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = BrandPrimary.copy(alpha = 0.12f),
-                            contentColor = BrandPrimary
-                        )
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Financial Report", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-
-                    Spacer(Modifier.width(6.dp))
-
-                    IconButton(onClick = { isExpanded = !isExpanded }, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.BarChart,
-                            contentDescription = "Toggle Chart",
-                            tint = BrandPrimary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                Row {
-                    IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Default.Edit, contentDescription = "Edit", tint = TextMuted, modifier = Modifier.size(18.dp))
-                    }
-                    IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ColorUnpaid, modifier = Modifier.size(18.dp))
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ── Cycle Profitability & Financial Chart (Mobile Enterprise Grade) ──
-@Composable
-private fun CycleProfitabilityChart(
-    cycle: OperationalCycleSummary,
-    currencyFormatter: NumberFormat,
-    modifier: Modifier = Modifier
-) {
-    val totalCost = cycle.totalPeriodCost
-    val feedsExpense = cycle.storeExpense
-    val empExpense = cycle.periodEmployeeExpenses
-    val sales = cycle.periodSalesTotal
-    val netGain = cycle.netGain
-    val isProfitable = cycle.isProfitable
-
-    val feedsPct = if (totalCost > 0) (feedsExpense / totalCost) * 100.0 else 100.0
-    val empPct = if (totalCost > 0) (empExpense / totalCost) * 100.0 else 0.0
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(ShapeLG)
-            .background(SurfaceContainer.copy(alpha = 0.45f))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        // ── 1. Header & Profit Verdict ──
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                Text(
-                    "Profit & Expense Analysis",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = TextDark)
-                )
-                Text(
-                    if (isProfitable) "Cycle generated net operating profit" else "Cycle in cost recovery phase",
-                    style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
-                )
-            }
-            Surface(
-                color = if (isProfitable) ColorPaid.copy(alpha = 0.15f) else ColorUnpaid.copy(alpha = 0.15f),
-                shape = ShapeXL
-            ) {
-                Text(
-                    text = if (isProfitable) "Profitable (+${String.format(Locale.US, "%.1f", cycle.profitMargin)}%)" else "Deficit (${cycle.recoveryRate.toInt()}%)",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = if (isProfitable) ColorPaid else ColorUnpaid,
-                        fontSize = 11.sp
-                    ),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                )
-            }
-        }
-
-        // ── 2. Expense Split / Ratio Bar (Feeds Delivery vs Employee Logs) ──
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Expense Distribution",
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Bold)
-                )
-                Text(
-                    "Total Cost: ${formatPeso(currencyFormatter, totalCost)}",
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextDark, fontWeight = FontWeight.Bold)
-                )
-            }
-
-            // Segmented proportion bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(10.dp)
-                    .clip(ShapeXL)
-                    .background(SurfaceContainerHigh)
-            ) {
-                if (totalCost > 0) {
-                    val feedsWeight = (feedsExpense / totalCost).coerceIn(0.01, 0.99).toFloat()
-                    val empWeight = (empExpense / totalCost).coerceIn(0.01, 0.99).toFloat()
-
-                    if (feedsExpense > 0) {
-                        Box(
-                            modifier = Modifier
-                                .weight(feedsWeight)
-                                .fillMaxHeight()
-                                .background(BrandPrimary)
-                        )
-                    }
-                    if (empExpense > 0) {
-                        Box(
-                            modifier = Modifier
-                                .weight(empWeight)
-                                .fillMaxHeight()
-                                .background(ChartHighlight)
-                        )
-                    }
-                } else {
-                    Box(modifier = Modifier.fillMaxSize().background(SurfaceContainerHigh))
-                }
-            }
-
-            // Two-column side-by-side tiles for legend (clean, no wrapping/clipping!)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    color = SurfaceLight,
-                    shape = ShapeMD
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(Modifier.size(10.dp).clip(ShapeXL).background(BrandPrimary))
-                        Spacer(Modifier.width(8.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Feeds Delivery", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
-                                Spacer(Modifier.width(4.dp))
-                                Text("(${String.format(Locale.US, "%.0f", feedsPct)}%)", style = MaterialTheme.typography.labelSmall.copy(color = BrandPrimary, fontWeight = FontWeight.Bold, fontSize = 10.sp))
-                            }
-                            Text(formatPeso(currencyFormatter, feedsExpense), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark), maxLines = 1)
-                        }
-                    }
-                }
-
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    color = SurfaceLight,
-                    shape = ShapeMD
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(Modifier.size(10.dp).clip(ShapeXL).background(ChartHighlight))
-                        Spacer(Modifier.width(8.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Employee Logs", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp), maxLines = 1)
-                                Spacer(Modifier.width(4.dp))
-                                Text("(${String.format(Locale.US, "%.0f", empPct)}%)", style = MaterialTheme.typography.labelSmall.copy(color = ChartHighlight, fontWeight = FontWeight.Bold, fontSize = 10.sp))
-                            }
-                            Text(formatPeso(currencyFormatter, empExpense), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark), maxLines = 1)
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── 3. Comparative Bar Chart (Equal-width columns, never truncates!) ──
-        val maxVal = maxOf(feedsExpense, empExpense, sales, kotlin.math.abs(netGain), 100.0)
-
-        Surface(
-            color = SurfaceLight,
-            shape = ShapeMD,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Text(
-                    "Cash Flow & Profitability Comparison",
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Bold),
-                    modifier = Modifier.padding(bottom = 14.dp)
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(140.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    ChartBarColumn(
-                        modifier = Modifier.weight(1f),
-                        label = "Feeds",
-                        icon = "🚚",
-                        amount = feedsExpense,
-                        maxAmount = maxVal,
-                        barBrush = Brush.verticalGradient(listOf(BrandPrimary, BrandSecondary))
-                    )
-
-                    ChartBarColumn(
-                        modifier = Modifier.weight(1f),
-                        label = "Labor",
-                        icon = "👤",
-                        amount = empExpense,
-                        maxAmount = maxVal,
-                        barBrush = Brush.verticalGradient(listOf(ChartHighlight, Color(0xFFFFD580)))
-                    )
-
-                    ChartBarColumn(
-                        modifier = Modifier.weight(1f),
-                        label = "Sales",
-                        icon = "🛒",
-                        amount = sales,
-                        maxAmount = maxVal,
-                        barBrush = Brush.verticalGradient(listOf(Color(0xFF2E7D32), Color(0xFF66BB6A)))
-                    )
-
-                    ChartBarColumn(
-                        modifier = Modifier.weight(1f),
-                        label = if (isProfitable) "Profit" else "Deficit",
-                        icon = if (isProfitable) "📈" else "📉",
-                        amount = netGain,
-                        maxAmount = maxVal,
-                        barBrush = if (isProfitable)
-                            Brush.verticalGradient(listOf(ColorPaid, Color(0xFF81C784)))
-                        else
-                            Brush.verticalGradient(listOf(ColorUnpaid, Color(0xFFE57373))),
-                        isNetGain = true
-                    )
-                }
-            }
-        }
-
-        // ── 4. Waterfall P&L Breakdown Table (No Amount Wrapping!) ──
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(ShapeMD)
-                .background(SurfaceLight)
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                "Cycle Financial Statement",
-                style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Bold)
-            )
-            HorizontalDivider(color = BorderLight)
-
-            BreakdownLedgerRow(
-                label = "Gross Sales Revenue (${cycle.periodOrderCount} orders)",
-                amountStr = "+${formatPeso(currencyFormatter, sales)}",
-                color = ColorPaid
-            )
-
-            BreakdownLedgerRow(
-                label = "(-) Feeds / Store Delivery",
-                amountStr = "-${formatPeso(currencyFormatter, feedsExpense)}",
-                color = TextDark
-            )
-
-            BreakdownLedgerRow(
-                label = "(=) Gross Operating Profit",
-                amountStr = "${if (cycle.grossProfit >= 0) "+" else ""}${formatPeso(currencyFormatter, cycle.grossProfit)}",
-                color = if (cycle.grossProfit >= 0) BrandPrimary else ColorUnpaid,
-                isBold = true
-            )
-
-            BreakdownLedgerRow(
-                label = "(-) Employee Wages & Logs",
-                amountStr = "-${formatPeso(currencyFormatter, empExpense)}",
-                color = ChartHighlight
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            // Highlighted Net Gain Executive Box (Guaranteed Single-Line!)
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = if (isProfitable) ColorPaid.copy(alpha = 0.08f) else ColorUnpaid.copy(alpha = 0.08f),
-                shape = ShapeMD
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        if (isProfitable) "(=) Net Profit Pocketed" else "(=) Net Deficit / Balance",
-                        modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = if (isProfitable) ColorPaid else ColorUnpaid
-                        )
-                    )
-                    Text(
-                        "${if (isProfitable) "+" else ""}${formatPeso(currencyFormatter, netGain)}",
-                        maxLines = 1,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Black,
-                            color = if (isProfitable) ColorPaid else ColorUnpaid,
-                            fontSize = 16.sp
-                        )
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChartBarColumn(
-    modifier: Modifier = Modifier,
-    label: String,
-    icon: String,
-    amount: Double,
-    maxAmount: Double,
-    barBrush: Brush,
-    isNetGain: Boolean = false
-) {
-    val absAmount = kotlin.math.abs(amount)
-    val heightFraction = if (maxAmount > 0) (absAmount / maxAmount).toFloat().coerceIn(0.08f, 1f) else 0.08f
-    val totalRailHeightDp = 80.dp
-    val barHeightDp = (totalRailHeightDp * heightFraction).coerceIn(8.dp, totalRailHeightDp)
-
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Bottom,
-        modifier = modifier
-    ) {
-        Text(
-            text = formatCompactAmount(amount, isNetGain),
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp,
-                color = if (isNetGain) (if (amount >= 0) ColorPaid else ColorUnpaid) else TextDark
-            ),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-
-        Spacer(Modifier.height(6.dp))
-
-        // Background rail track + styled bar
-        Box(
-            modifier = Modifier
-                .width(36.dp)
-                .height(totalRailHeightDp)
-                .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
-                .background(SurfaceContainerHigh.copy(alpha = 0.35f)),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(barHeightDp)
-                    .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
-                    .background(barBrush)
-            )
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Text(icon, fontSize = 11.sp)
-            Spacer(Modifier.width(2.dp))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = 11.sp,
-                    color = TextDark,
-                    fontWeight = FontWeight.Bold
-                ),
-                maxLines = 1
-            )
-        }
-    }
-}
-
-private fun formatCompactAmount(amount: Double, isNetGain: Boolean = false): String {
-    val abs = kotlin.math.abs(amount)
-    val prefix = if (amount < 0) "-₱" else if (isNetGain && amount > 0) "+₱" else "₱"
-    return when {
-        abs >= 1_000_000 -> "$prefix${String.format(Locale.US, "%.1fM", abs / 1_000_000)}"
-        abs >= 1_000 -> "$prefix${String.format(Locale.US, "%.1fk", abs / 1_000)}"
-        else -> "$prefix${String.format(Locale.US, "%.0f", abs)}"
-    }
-}
-
-@Composable
-private fun BreakdownLedgerRow(
-    label: String,
-    amountStr: String,
-    color: Color,
-    isBold: Boolean = false,
-    fontSize: androidx.compose.ui.unit.TextUnit = 12.sp
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            label,
-            modifier = Modifier.weight(1f, fill = false).padding(end = 12.dp),
-            style = MaterialTheme.typography.bodySmall.copy(
-                color = TextDark,
-                fontSize = fontSize,
-                fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
-            )
-        )
-        Text(
-            amountStr,
-            maxLines = 1,
-            style = MaterialTheme.typography.bodySmall.copy(
-                color = color,
-                fontSize = fontSize,
-                fontWeight = if (isBold) FontWeight.Black else FontWeight.Bold
-            )
-        )
-    }
-}
-
-// ── Full-Width Mobile Enterprise Modal Bottom Sheet ──
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CycleBreakdownBottomSheet(
-    cycle: OperationalCycleSummary,
-    allEmployeeEntries: List<CashOutEntry>,
-    currencyFormatter: NumberFormat,
-    dateSpanFormat: SimpleDateFormat,
-    onDismiss: () -> Unit
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val startDateStr = dateSpanFormat.format(Date(cycle.periodStartTimestamp))
-    val endDateStr = if (cycle.periodEndTimestamp != null) dateSpanFormat.format(Date(cycle.periodEndTimestamp)) else "Present"
-    val sdfFull = remember { SimpleDateFormat("MMM dd, yyyy • h:mm a", Locale.getDefault()) }
-
-    val cycleEmpEntries = remember(cycle, allEmployeeEntries) {
-        allEmployeeEntries.filter { entry ->
-            entry.timestamp >= cycle.periodStartTimestamp &&
-            (cycle.periodEndTimestamp == null || entry.timestamp < cycle.periodEndTimestamp)
-        }.sortedByDescending { it.timestamp }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = BackgroundLight,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        dragHandle = { BottomSheetDefaults.DragHandle() }
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 36.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // ── Top Header with Dismiss Action ──
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            cycle.expense.title,
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Black,
-                                color = TextDark,
-                                fontSize = 22.sp
-                            )
-                        )
-                        Spacer(Modifier.width(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (cycle.isActive) {
                         Surface(
-                            color = if (cycle.isActive) BrandPrimary.copy(alpha = 0.12f) else SurfaceContainer,
+                            color = BrandPrimary.copy(alpha = 0.12f),
                             shape = ShapeXL
                         ) {
                             Text(
-                                text = if (cycle.isActive) "ACTIVE" else "COMPLETED",
+                                "ONGOING",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.Bold,
-                                    color = if (cycle.isActive) BrandPrimary else TextMuted,
+                                    color = BrandPrimary,
                                     fontSize = 10.sp
                                 ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                             )
                         }
                     }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "$startDateStr – $endDateStr",
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 12.sp)
-                    )
-                    if (!cycle.expense.note.isNullOrBlank()) {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "Supplier: ${cycle.expense.note}",
-                            style = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(ShapeXL)
-                        .background(SurfaceContainer)
-                ) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = TextDark, modifier = Modifier.size(18.dp))
-                }
-            }
-
-            HorizontalDivider(color = BorderLight)
-
-            // ── Executive Hero Card ──
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                shape = ShapeLG,
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                if (cycle.isProfitable) "NET PROFIT POCKETED" else "CYCLE REMAINING DEFICIT",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextMuted,
-                                    letterSpacing = 0.8.sp,
-                                    fontSize = 10.sp
-                                )
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "${if (cycle.isProfitable) "+" else ""}${formatPeso(currencyFormatter, cycle.netGain)}",
-                                style = MaterialTheme.typography.headlineMedium.copy(
-                                    fontWeight = FontWeight.Black,
-                                    color = if (cycle.isProfitable) ColorPaid else ColorUnpaid,
-                                    fontSize = 28.sp
-                                )
-                            )
-                        }
-
-                        Surface(
-                            color = if (cycle.isProfitable) ColorPaid.copy(alpha = 0.12f) else ColorUnpaid.copy(alpha = 0.12f),
-                            shape = ShapeXL
-                        ) {
-                            Text(
-                                text = if (cycle.isProfitable) "Profitable (+${String.format(Locale.US, "%.1f", cycle.profitMargin)}%)" else "Deficit (${cycle.recoveryRate.toInt()}%)",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (cycle.isProfitable) ColorPaid else ColorUnpaid,
-                                    fontSize = 11.sp
-                                ),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.height(14.dp))
-                    HorizontalDivider(color = BorderLight.copy(alpha = 0.5f))
-                    Spacer(Modifier.height(12.dp))
-
-                    // 3 KPI Pills Row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("Total Sales", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
-                            Text(formatPeso(currencyFormatter, cycle.periodSalesTotal), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Orders", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
-                            Text("${cycle.periodOrderCount}", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text("Total Cost", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
-                            Text(formatPeso(currencyFormatter, cycle.totalPeriodCost), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
-                        }
-                    }
-                }
-            }
-
-            // ── Interactive Responsive Chart & Ledger ──
-            CycleProfitabilityChart(
-                cycle = cycle,
-                currencyFormatter = currencyFormatter
-            )
-
-            // ── Itemized Employee Expenses in this Cycle ──
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Employee Expenses Logged",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextDark, fontSize = 16.sp)
-                    )
                     Surface(
-                        color = ChartHighlight.copy(alpha = 0.15f),
+                        color = if (isRecovered) ColorPaid.copy(alpha = 0.12f) else ColorUnpaid.copy(alpha = 0.12f),
                         shape = ShapeXL
                     ) {
                         Text(
-                            "${cycleEmpEntries.size} entries • ${formatPeso(currencyFormatter, cycle.periodEmployeeExpenses)}",
+                            if (isRecovered) "RECOVERED" else "DEFICIT",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextDark,
-                                fontSize = 11.sp
+                                color = if (isRecovered) ColorPaid else ColorUnpaid,
+                                fontSize = 10.sp
                             ),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                         )
                     }
                 }
+            }
 
-                if (cycleEmpEntries.isEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                        shape = ShapeMD
-                    ) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, tint = TextMuted.copy(alpha = 0.4f), modifier = Modifier.size(36.dp))
-                                Spacer(Modifier.height(8.dp))
-                                Text("No employee expenses recorded during this cycle.", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
-                            }
-                        }
+            Spacer(Modifier.height(10.dp))
+
+            // Metrics Grid: Paid Sales, Employee Expenses, Total Cost
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = SurfaceContainer.copy(alpha = 0.5f),
+                shape = ShapeSM
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("Paid Sales (${cycle.periodOrderCount})", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                        Text(formatPeso(currencyFormatter, cycle.periodSalesTotal), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark))
                     }
-                } else {
-                    cycleEmpEntries.forEach { empEntry ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceLight),
-                            shape = ShapeMD,
-                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    modifier = Modifier.weight(1f).padding(end = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .clip(ShapeMD)
-                                            .background(ChartHighlight.copy(alpha = 0.15f)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Person, contentDescription = null, tint = TextDark, modifier = Modifier.size(20.dp))
-                                    }
-                                    Spacer(Modifier.width(12.dp))
-                                    Column {
-                                        Text(
-                                            if (empEntry.cashierName.isNotBlank()) empEntry.cashierName else "Employee Cash Out",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark)
-                                        )
-                                        Text(
-                                            sdfFull.format(Date(empEntry.timestamp)),
-                                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
-                                        )
-                                        if (!empEntry.note.isNullOrBlank()) {
-                                            Spacer(Modifier.height(2.dp))
-                                            Surface(
-                                                color = SurfaceContainer,
-                                                shape = ShapeXS
-                                            ) {
-                                                Text(
-                                                    empEntry.note,
-                                                    style = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontSize = 11.sp),
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Text(
-                                    formatPeso(currencyFormatter, empEntry.amount),
-                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                        fontWeight = FontWeight.Black,
-                                        color = ColorUnpaid
-                                    ),
-                                    maxLines = 1
-                                )
-                            }
-                        }
+                    Column {
+                        Text("Employee Wages", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                        Text(formatPeso(currencyFormatter, cycle.periodEmployeeExpenses), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                    }
+                    Column {
+                        Text("Total Period Cost", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                        Text(formatPeso(currencyFormatter, cycle.totalPeriodCost), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = ColorUnpaid))
                     }
                 }
             }
 
             Spacer(Modifier.height(8.dp))
 
-            Button(
-                onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary),
-                shape = ShapeMD,
-                modifier = Modifier.fillMaxWidth().height(48.dp)
+            // Recovery Progress Bar
+            LinearProgressIndicator(
+                progress = { progressFraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(ShapeXL),
+                color = if (isRecovered) ColorPaid else BrandPrimary,
+                trackColor = SurfaceContainer
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // Bottom row: Recovery % and Net Balance
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Done", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                Text(
+                    text = "${String.format(Locale.US, "%.1f", cycle.recoveryRate)}% covered",
+                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (isRecovered) "Net Profit: " else "Deficit: ",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp)
+                    )
+                    Text(
+                        text = (if (cycle.netBalance > 0) "+" else "") + formatPeso(currencyFormatter, cycle.netBalance),
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            color = if (isRecovered) ColorPaid else ColorUnpaid,
+                            fontSize = 13.sp
+                        )
+                    )
+                }
             }
         }
     }
@@ -1745,19 +1869,45 @@ private fun CashOutEntryFormDialog(
 }
 
 // ── Store Operational Expense Form Dialog ──
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun OperationalExpenseFormDialog(
     entry: OperationalExpense?,
     isSaving: Boolean,
     onDismiss: () -> Unit,
-    onSave: (title: String, amount: Double, note: String?) -> Unit
+    onSave: (title: String, amount: Double, note: String?, timestamp: Long) -> Unit
 ) {
     var title by remember { mutableStateOf(entry?.title ?: "") }
     var amountText by remember { mutableStateOf(entry?.amount?.let(::formatDraftAmount) ?: "") }
     var note by remember { mutableStateOf(entry?.note ?: "") }
+    var expenseTimestamp by remember { mutableStateOf(entry?.timestamp ?: System.currentTimeMillis()) }
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    val displayDateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = expenseTimestamp)
 
     val amount = amountText.toDoubleOrNull()
     val canSave = !isSaving && title.isNotBlank() && amount != null && amount > 0.0
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { expenseTimestamp = it }
+                    showDatePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+            }
+        ) {
+            DatePicker(
+                state = datePickerState,
+                title = { Text("Select Expense Date", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) }
+            )
+        }
+    }
 
     AlertDialog(
         onDismissRequest = { if (!isSaving) onDismiss() },
@@ -1806,11 +1956,36 @@ private fun OperationalExpenseFormDialog(
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                // Date Picker Surface
+                Surface(
+                    onClick = { showDatePicker = true },
+                    shape = ShapeXS,
+                    color = SurfaceContainer,
+                    border = BorderStroke(1.dp, BorderLight),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = BrandPrimary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text("Expense Date", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                                Text(displayDateFormat.format(Date(expenseTimestamp)), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = TextDark))
+                            }
+                        }
+                        Text("Change", style = MaterialTheme.typography.labelSmall.copy(color = BrandPrimary, fontWeight = FontWeight.Bold))
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(title.trim(), amount ?: 0.0, note.trim().ifBlank { null }) },
+                onClick = { onSave(title.trim(), amount ?: 0.0, note.trim().ifBlank { null }, expenseTimestamp) },
                 enabled = canSave,
                 colors = ButtonDefaults.buttonColors(containerColor = BrandPrimary)
             ) { Text(if (isSaving) "Saving…" else "Save") }
