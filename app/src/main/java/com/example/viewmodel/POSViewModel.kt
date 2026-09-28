@@ -1025,58 +1025,15 @@ class POSViewModel(
     )
 
     // Dynamic Store Operational Cycles:
-    // Computes capital-recovery cycles per OperationalExpense (supply/batch purchase),
-    // tracking whether sales covered store expenses and employee wages up until the next purchase.
+    // Computes capital-recovery cycles per OperationalExpense using FIFO sequential tracking:
+    // Expenses are fulfilled in the order they are logged, so an expense continues tracking until
+    // 100% covered, and subsequent expenses queue until previous expenses are fulfilled.
     val operationalCycles: StateFlow<List<OperationalCycleSummary>> = combine(
         operationalExpenses,
         transactions,
         cashOutEntries
     ) { opList, txList, cashList ->
-        if (opList.isEmpty()) return@combine emptyList()
-        val sortedAsc = opList.sortedBy { it.timestamp }
-        val summaries = mutableListOf<OperationalCycleSummary>()
-        val n = sortedAsc.size
-
-        for (i in 0 until n) {
-            val curr = sortedAsc[i]
-            val startTime = curr.timestamp
-            val endTime = if (i + 1 < n) sortedAsc[i + 1].timestamp else null
-            val isActive = (i == n - 1)
-
-            val cycleTxs = txList.filter { tx ->
-                if (tx.status != "PAID") return@filter false
-                val effectiveTime = tx.settledTimestamp ?: tx.timestamp
-                effectiveTime >= startTime && (endTime == null || effectiveTime < endTime)
-            }
-            val periodSales = cycleTxs.sumOf { it.totalAmount }.roundToCentavos()
-            val periodOrders = cycleTxs.size
-
-            val periodEmpExpenses = cashList.filter { co ->
-                co.timestamp >= startTime &&
-                (endTime == null || co.timestamp < endTime)
-            }.sumOf { it.amount }.roundToCentavos()
-
-            val totalCost = (curr.amount + periodEmpExpenses).roundToCentavos()
-            val net = (periodSales - totalCost).roundToCentavos()
-            val recoveryRate = if (totalCost > 0) ((periodSales / totalCost) * 100.0).roundToCentavos() else 100.0
-
-            summaries.add(
-                OperationalCycleSummary(
-                    expense = curr,
-                    periodStartTimestamp = startTime,
-                    periodEndTimestamp = endTime,
-                    periodSalesTotal = periodSales,
-                    periodOrderCount = periodOrders,
-                    periodEmployeeExpenses = periodEmpExpenses,
-                    totalPeriodCost = totalCost,
-                    netBalance = net,
-                    recoveryRate = recoveryRate,
-                    isActive = isActive
-                )
-            )
-        }
-
-        summaries.reversed()
+        computeOperationalCyclesFifo(opList, txList, cashList)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -1090,7 +1047,7 @@ class POSViewModel(
         val netProfit = cycles.sumOf { it.netBalance }.roundToCentavos()
         val activeCycle = cycles.firstOrNull { it.isActive }
         val closedCycles = cycles.filterNot { it.isActive }
-        val closedDeficits = closedCycles.filter { it.netBalance < 0.0 }
+        val closedDeficits = closedCycles.filter { it.netBalance < 0.0 && !it.isQueued }
 
         CapitalRecoveryOverview(
             totalNetProfit = netProfit,
@@ -1266,7 +1223,8 @@ data class OperationalCycleSummary(
     val totalPeriodCost: Double,
     val netBalance: Double,
     val recoveryRate: Double,
-    val isActive: Boolean
+    val isActive: Boolean,
+    val isQueued: Boolean = false
 ) {
     val storeExpense: Double get() = expense.amount
     val grossProfit: Double get() = (periodSalesTotal - storeExpense).roundToCentavos()
@@ -1343,4 +1301,145 @@ class POSViewModelFactory(
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
+}
+
+private sealed class FifoEvent(val timestamp: Long, val priority: Int) : Comparable<FifoEvent> {
+    override fun compareTo(other: FifoEvent): Int {
+        val cmp = this.timestamp.compareTo(other.timestamp)
+        if (cmp != 0) return cmp
+        return this.priority.compareTo(other.priority)
+    }
+    class Wage(timestamp: Long, val amount: Double) : FifoEvent(timestamp, priority = 1)
+    class Sale(timestamp: Long, val amount: Double) : FifoEvent(timestamp, priority = 2)
+}
+
+/**
+ * Computes capital-recovery cycles per OperationalExpense using FIFO sequential tracking:
+ * - Expenses are fulfilled in the order they are logged.
+ * - Sales continue tracking against the active expense until it reaches 100% recovery.
+ * - Once fully recovered, subsequent sales overflow to the next queued expense.
+ * - Employee wages during an expense's active period are attributed to that expense.
+ */
+fun computeOperationalCyclesFifo(
+    operationalExpenses: List<OperationalExpense>,
+    transactions: List<TransactionRecord>,
+    cashOutEntries: List<CashOutEntry>
+): List<OperationalCycleSummary> {
+    if (operationalExpenses.isEmpty()) return emptyList()
+
+    val sortedOps = operationalExpenses.sortedWith(compareBy({ it.timestamp }, { it.id }))
+    val n = sortedOps.size
+
+    val paidTxs = transactions.filter { it.status == "PAID" }
+        .sortedBy { it.settledTimestamp ?: it.timestamp }
+
+    val events = mutableListOf<FifoEvent>()
+    for (co in cashOutEntries) {
+        if (co.amount > 0) {
+            events.add(FifoEvent.Wage(co.timestamp, co.amount))
+        }
+    }
+    for (tx in paidTxs) {
+        if (tx.totalAmount > 0) {
+            val time = tx.settledTimestamp ?: tx.timestamp
+            events.add(FifoEvent.Sale(time, tx.totalAmount))
+        }
+    }
+    events.sort()
+
+    class CycleTracker(
+        val expense: OperationalExpense,
+        var salesTotal: Double = 0.0,
+        var orderCount: Int = 0,
+        var empExpenses: Double = 0.0,
+        var isRecovered: Boolean = false,
+        var recoveredTimestamp: Long? = null
+    ) {
+        val totalCost: Double
+            get() = (expense.amount + empExpenses).roundToCentavos()
+    }
+
+    val trackers = sortedOps.map { CycleTracker(it) }
+
+    for (event in events) {
+        val t = event.timestamp
+        val existingTrackers = trackers.filter { it.expense.timestamp <= t }
+        if (existingTrackers.isEmpty()) continue
+
+        when (event) {
+            is FifoEvent.Wage -> {
+                val target = existingTrackers.firstOrNull { !it.isRecovered } ?: existingTrackers.last()
+                target.empExpenses = (target.empExpenses + event.amount).roundToCentavos()
+                if (target.salesTotal < target.totalCost) {
+                    target.isRecovered = false
+                }
+            }
+            is FifoEvent.Sale -> {
+                var remaining = event.amount
+                while (remaining > 0.0001) {
+                    val target = existingTrackers.firstOrNull { !it.isRecovered }
+                    if (target != null) {
+                        val needed = maxOf(0.0, (target.totalCost - target.salesTotal).roundToCentavos())
+                        if (needed <= 0.0001) {
+                            target.isRecovered = true
+                            target.recoveredTimestamp = t
+                            continue
+                        }
+                        if (remaining < needed) {
+                            target.salesTotal = (target.salesTotal + remaining).roundToCentavos()
+                            target.orderCount += 1
+                            remaining = 0.0
+                        } else {
+                            target.salesTotal = (target.salesTotal + needed).roundToCentavos()
+                            target.orderCount += 1
+                            target.isRecovered = true
+                            target.recoveredTimestamp = t
+                            remaining = (remaining - needed).roundToCentavos()
+                        }
+                    } else {
+                        val latest = existingTrackers.last()
+                        latest.salesTotal = (latest.salesTotal + remaining).roundToCentavos()
+                        latest.orderCount += 1
+                        remaining = 0.0
+                    }
+                }
+            }
+        }
+    }
+
+    val activeIndex = trackers.indexOfFirst { !it.isRecovered }.let { if (it == -1) n - 1 else it }
+
+    val summaries = mutableListOf<OperationalCycleSummary>()
+    for (i in 0 until n) {
+        val tr = trackers[i]
+        val totalCost = tr.totalCost
+        val net = (tr.salesTotal - totalCost).roundToCentavos()
+        val recoveryRate = if (totalCost > 0) ((tr.salesTotal / totalCost) * 100.0).roundToCentavos() else 100.0
+        val isActive = (i == activeIndex)
+        val isQueued = (i > activeIndex && tr.salesTotal == 0.0)
+
+        val endTime = if (tr.isRecovered && i + 1 < n) {
+            tr.recoveredTimestamp ?: sortedOps[i + 1].timestamp
+        } else {
+            null
+        }
+
+        summaries.add(
+            OperationalCycleSummary(
+                expense = tr.expense,
+                periodStartTimestamp = tr.expense.timestamp,
+                periodEndTimestamp = endTime,
+                periodSalesTotal = tr.salesTotal,
+                periodOrderCount = tr.orderCount,
+                periodEmployeeExpenses = tr.empExpenses,
+                totalPeriodCost = totalCost,
+                netBalance = net,
+                recoveryRate = recoveryRate,
+                isActive = isActive,
+                isQueued = isQueued
+            )
+        )
+    }
+
+    return summaries.reversed()
 }

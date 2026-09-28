@@ -388,7 +388,14 @@ fun CashLogScreen(viewModel: POSViewModel, modifier: Modifier = Modifier) {
                             CapitalCycleCard(
                                 cycle = cycle,
                                 currencyFormatter = currencyFormatter,
-                                dateFormatter = sdf
+                                dateFormatter = sdf,
+                                onEdit = {
+                                    editingOperationalEntry = cycle.expense
+                                    showOperationalForm = true
+                                },
+                                onDelete = {
+                                    operationalEntryToDelete = cycle.expense
+                                }
                             )
                         }
 
@@ -1549,7 +1556,9 @@ private fun OperationalExpenseItemCard(
 private fun CapitalCycleCard(
     cycle: OperationalCycleSummary,
     currencyFormatter: NumberFormat,
-    dateFormatter: SimpleDateFormat
+    dateFormatter: SimpleDateFormat,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
 ) {
     val isRecovered = cycle.netBalance >= 0.0
     val progressFraction = (cycle.recoveryRate / 100.0).toFloat().coerceIn(0f, 1f)
@@ -1580,7 +1589,11 @@ private fun CapitalCycleCard(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (cycle.isActive) Icons.Default.Autorenew else Icons.Default.Inventory,
+                            imageVector = when {
+                                cycle.isActive -> Icons.Default.Autorenew
+                                cycle.isQueued -> Icons.Default.Schedule
+                                else -> Icons.Default.Inventory
+                            },
                             contentDescription = null,
                             tint = if (cycle.isActive) BrandPrimary else TextDark,
                             modifier = Modifier.size(18.dp)
@@ -1616,19 +1629,36 @@ private fun CapitalCycleCard(
                             )
                         }
                     }
-                    Surface(
-                        color = if (isRecovered) ColorPaid.copy(alpha = 0.12f) else ColorUnpaid.copy(alpha = 0.12f),
-                        shape = ShapeXL
-                    ) {
-                        Text(
-                            if (isRecovered) "RECOVERED" else "DEFICIT",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = if (isRecovered) ColorPaid else ColorUnpaid,
-                                fontSize = 10.sp
-                            ),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
+                    if (cycle.isQueued) {
+                        Surface(
+                            color = SurfaceContainer,
+                            shape = ShapeXL
+                        ) {
+                            Text(
+                                "QUEUED",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    } else {
+                        Surface(
+                            color = if (isRecovered) ColorPaid.copy(alpha = 0.12f) else ColorUnpaid.copy(alpha = 0.12f),
+                            shape = ShapeXL
+                        ) {
+                            Text(
+                                if (isRecovered) "RECOVERED" else "DEFICIT",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isRecovered) ColorPaid else ColorUnpaid,
+                                    fontSize = 10.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1664,7 +1694,7 @@ private fun CapitalCycleCard(
 
             // Recovery Progress Bar
             LinearProgressIndicator(
-                progress = { progressFraction },
+                progress = { if (cycle.isQueued) 0f else progressFraction },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(6.dp)
@@ -1682,23 +1712,62 @@ private fun CapitalCycleCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${String.format(Locale.US, "%.1f", cycle.recoveryRate)}% covered",
+                    text = if (cycle.isQueued) "0.0% covered · Waiting in queue" else "${String.format(Locale.US, "%.1f", cycle.recoveryRate)}% covered",
                     style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                 )
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = if (isRecovered) "Net Profit: " else "Deficit: ",
+                        text = if (cycle.isQueued) "Queued Target: " else if (isRecovered) "Net Profit: " else "Deficit: ",
                         style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp)
                     )
                     Text(
-                        text = (if (cycle.netBalance > 0) "+" else "") + formatPeso(currencyFormatter, cycle.netBalance),
+                        text = (if (cycle.netBalance > 0 && !cycle.isQueued) "+" else "") + formatPeso(currencyFormatter, if (cycle.isQueued) -cycle.netBalance else cycle.netBalance),
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Black,
-                            color = if (isRecovered) ColorPaid else ColorUnpaid,
+                            color = if (cycle.isQueued) TextMuted else if (isRecovered) ColorPaid else ColorUnpaid,
                             fontSize = 13.sp
                         )
                     )
+                }
+            }
+
+            // Note if present
+            if (!cycle.expense.note.isNullOrBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    color = SurfaceContainer,
+                    shape = ShapeXS
+                ) {
+                    Text(
+                        "Note: ${cycle.expense.note}",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextDark, fontSize = 11.sp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            // Action Buttons: Edit and Delete
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(
+                    onClick = onEdit,
+                    colors = ButtonDefaults.textButtonColors(contentColor = BrandPrimary),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.width(4.dp))
+                TextButton(
+                    onClick = onDelete,
+                    colors = ButtonDefaults.textButtonColors(contentColor = ColorUnpaid),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Delete", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }

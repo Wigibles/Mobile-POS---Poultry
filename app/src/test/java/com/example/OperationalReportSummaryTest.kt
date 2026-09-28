@@ -5,6 +5,7 @@ import com.example.viewmodel.CapitalRecoveryOverview
 import com.example.viewmodel.OperationalCycleSummary
 import com.example.viewmodel.OperationalDailySummary
 import com.example.viewmodel.OperationalReportSummary
+import com.example.viewmodel.computeOperationalCyclesFifo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -409,5 +410,103 @@ class OperationalReportSummaryTest {
         assertEquals(1, cycle2Txs.size)
         assertEquals(3, cycle2Txs[0].id)
         assertEquals(2500.0, cycle2Txs.sumOf { it.totalAmount }, 0.001)
+    }
+
+    @Test
+    fun testFifoSequentialTrackingUnrecoveredFirstExpenseQueuesSecondExpense() {
+        // Feeds logged at 1000L for ₱14,595
+        // Plastic logged at 1000L for ₱4,000
+        val exp1 = OperationalExpense(id = 1, title = "FEEDS", amount = 14595.0, timestamp = 1000L)
+        val exp2 = OperationalExpense(id = 2, title = "PLASTIC", amount = 4000.0, timestamp = 1000L)
+        val opList = listOf(exp1, exp2)
+
+        // 38 paid sales totaling ₱2,761 at 1500L
+        val txList = listOf(
+            TransactionRecord(id = 1, totalAmount = 2761.0, subtotal = 2761.0, tax = 0.0, discount = 0.0, status = "PAID", timestamp = 1500L)
+        )
+
+        val cycles = computeOperationalCyclesFifo(opList, txList, emptyList())
+        assertEquals(2, cycles.size)
+
+        // cycles is reversed (newest first): [PLASTIC, FEEDS]
+        val plasticCycle = cycles[0]
+        val feedsCycle = cycles[1]
+
+        // FEEDS was logged first, so it receives the ₱2,761 sales
+        assertEquals("FEEDS", feedsCycle.expense.title)
+        assertEquals(2761.0, feedsCycle.periodSalesTotal, 0.001)
+        assertEquals(1, feedsCycle.periodOrderCount)
+        assertEquals(14595.0, feedsCycle.totalPeriodCost, 0.001)
+        assertEquals(-11834.0, feedsCycle.netBalance, 0.001)
+        assertEquals(18.92, feedsCycle.recoveryRate, 0.01)
+        assertTrue(feedsCycle.isActive)
+        assertFalse(feedsCycle.isQueued)
+        assertFalse(feedsCycle.isProfitable)
+
+        // PLASTIC was logged second, and FEEDS is not yet covered, so PLASTIC is queued with ₱0 sales
+        assertEquals("PLASTIC", plasticCycle.expense.title)
+        assertEquals(0.0, plasticCycle.periodSalesTotal, 0.001)
+        assertEquals(0, plasticCycle.periodOrderCount)
+        assertEquals(4000.0, plasticCycle.totalPeriodCost, 0.001)
+        assertEquals(-4000.0, plasticCycle.netBalance, 0.001)
+        assertEquals(0.0, plasticCycle.recoveryRate, 0.001)
+        assertFalse(plasticCycle.isActive)
+        assertTrue(plasticCycle.isQueued)
+    }
+
+    @Test
+    fun testFifoSequentialTrackingOverflowRecoversFirstAndBeginsSecond() {
+        val exp1 = OperationalExpense(id = 1, title = "FEEDS", amount = 10000.0, timestamp = 1000L)
+        val exp2 = OperationalExpense(id = 2, title = "PLASTIC", amount = 4000.0, timestamp = 1000L)
+        val opList = listOf(exp1, exp2)
+
+        // Tx1: ₱6,000 at 1200L
+        // Tx2: ₱6,000 at 1400L -> total sales = ₱12,000
+        val txList = listOf(
+            TransactionRecord(id = 1, totalAmount = 6000.0, subtotal = 6000.0, tax = 0.0, discount = 0.0, status = "PAID", timestamp = 1200L),
+            TransactionRecord(id = 2, totalAmount = 6000.0, subtotal = 6000.0, tax = 0.0, discount = 0.0, status = "PAID", timestamp = 1400L)
+        )
+
+        val cycles = computeOperationalCyclesFifo(opList, txList, emptyList())
+        val plasticCycle = cycles[0]
+        val feedsCycle = cycles[1]
+
+        // FEEDS required ₱10,000. It took ₱6,000 from tx1, plus ₱4,000 from tx2 -> ₱10,000 total (100% recovered)
+        assertEquals("FEEDS", feedsCycle.expense.title)
+        assertEquals(10000.0, feedsCycle.periodSalesTotal, 0.001)
+        assertEquals(2, feedsCycle.periodOrderCount)
+        assertEquals(0.0, feedsCycle.netBalance, 0.001)
+        assertEquals(100.0, feedsCycle.recoveryRate, 0.001)
+        assertFalse(feedsCycle.isActive)
+        assertFalse(feedsCycle.isQueued)
+        assertTrue(feedsCycle.isProfitable)
+
+        // PLASTIC took the remaining ₱2,000 overflow from tx2 -> 50% covered, currently ONGOING
+        assertEquals("PLASTIC", plasticCycle.expense.title)
+        assertEquals(2000.0, plasticCycle.periodSalesTotal, 0.001)
+        assertEquals(1, plasticCycle.periodOrderCount)
+        assertEquals(-2000.0, plasticCycle.netBalance, 0.001)
+        assertEquals(50.0, plasticCycle.recoveryRate, 0.001)
+        assertTrue(plasticCycle.isActive)
+        assertFalse(plasticCycle.isQueued)
+    }
+
+    @Test
+    fun testFifoWithEmployeeWagesIncreasesActiveCost() {
+        val exp1 = OperationalExpense(id = 1, title = "FEEDS", amount = 5000.0, timestamp = 1000L)
+        val cashOut = CashOutEntry(id = 1, cashierName = "Juan", amount = 500.0, timestamp = 1100L)
+        val tx = TransactionRecord(id = 1, totalAmount = 5200.0, subtotal = 5200.0, tax = 0.0, discount = 0.0, status = "PAID", timestamp = 1200L)
+
+        val cycles = computeOperationalCyclesFifo(listOf(exp1), listOf(tx), listOf(cashOut))
+        val cycle = cycles[0]
+
+        // Total cost should be ₱5,000 + ₱500 = ₱5,500
+        assertEquals(5500.0, cycle.totalPeriodCost, 0.001)
+        assertEquals(500.0, cycle.periodEmployeeExpenses, 0.001)
+        assertEquals(5200.0, cycle.periodSalesTotal, 0.001)
+        assertEquals(-300.0, cycle.netBalance, 0.001)
+        assertEquals(94.55, cycle.recoveryRate, 0.01)
+        assertTrue(cycle.isActive)
+        assertFalse(cycle.isProfitable)
     }
 }
